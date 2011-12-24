@@ -1,0 +1,110 @@
+<?php
+
+/**
+ * Implementation of hook_menu().
+ */
+function commerce_devel_generate_menu() {
+  $items = array();
+
+  $items['admin/config/development/generate/product'] = array(
+    'title' => 'Generate products',
+    'description' => 'Generate a given number of products. Optionally delete current products.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('commerce_devel_generate_products_form'),
+    'access arguments' => array('administer products'),
+  );
+
+  return $items;
+}
+
+function commerce_devel_generate_products_form() {
+  $options = array();
+
+  $types = commerce_product_types();
+  $suffix = '';
+  foreach ($types as $type => $type_array) {
+    $options[$type] = $type;
+  }
+
+  if (empty($options)) {
+    drupal_set_message(t('You do not have any product types that can be generated. <a href="@create-type">Go create a new content type</a> already!</a>', array('@create-type' => url('admin/structure/types/add'))), 'error', FALSE);
+    return;
+  }
+
+  $form['product_types'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Content types'),
+    '#options' => $options,
+    '#default_value' => array_keys($options),
+  );
+  $form['kill_products'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('<strong>Delete all products</strong> in these product types before generating new products.'),
+    '#default_value' => FALSE,
+  );
+  $form['num_products'] = array(
+    '#type' => 'textfield',
+    '#title' => t('How many products would you like to generate?'),
+    '#default_value' => 50,
+    '#size' => 10,
+  );
+
+  $form['title_length'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Max word length of titles'),
+    '#default_value' => 4,
+    '#size' => 10,
+  );
+
+  unset($options);
+  $options[LANGUAGE_NONE] = t('Language neutral');
+  if (module_exists('locale')) {
+    $options += locale_language_list();
+  }
+  $form['add_language'] = array(
+    '#type' => 'select',
+    '#title' => t('Set language on products'),
+    '#multiple' => TRUE,
+    '#disabled' => !module_exists('locale'),
+    '#description' => t('Requires locale.module'),
+    '#options' => $options,
+    '#default_value' => array(LANGUAGE_NONE => LANGUAGE_NONE),
+  );
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Generate'),
+  );
+  $form['#redirect'] = FALSE;
+
+  return $form;
+}
+
+function commerce_devel_generate_products_form_submit($form_id, &$form_state) {
+  module_load_include('inc', 'commerce_devel_generate', 'devel_generate');
+  $form_state['values']['product_types'] = array_filter($form_state['values']['product_types']);
+  if ($form_state['values']['num_products'] <= 50) {
+    // module_load_include('inc', 'commerce_devel_generate');
+    commerce_devel_generate_products($form_state);
+  }
+  else {
+    module_load_include('inc', 'commerce_devel_generate', 'devel_generate_batch');
+    commerce_devel_generate_batch_products($form_state);
+  }
+}
+
+
+/**
+ * Pre-process the devel_generate_content_form request.  This is needed so
+ * batch api can get the list of users once.
+ *
+ * @param $num
+ *   array of options obtained from devel_generate_products_form.
+ */
+function commerce_devel_generate_products_pre_product(&$results) {
+  module_load_include('inc', 'devel_generate');
+  // Get user id.
+  $users = devel_get_users();
+  $users = array_merge($users, array('0'));
+  $results['users'] = $users;
+}

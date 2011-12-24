@@ -1,0 +1,682 @@
+<?php
+
+/**
+ * @file
+ * Defines additional menu item and order html email functonality.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_email_menu() {
+  $items = array();
+
+  $items['admin/commerce/config/email'] = array(
+    'title' => 'Emails',
+    'description' => 'Administer commerce emails',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('commerce_email_form'),
+    'access arguments' => array('configure store'),
+    'type' => MENU_NORMAL_ITEM,
+    'weight' => 99,
+  );
+  
+  $items['admin/commerce/config/email/content'] = array(
+    'title' => 'Content',
+    'description' => 'Administer commerce emails',
+    'weight' => 0,
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+  );
+  
+  $items['admin/commerce/config/email/settings'] = array(
+    'title' => 'Settings',
+    'description' => 'Manage email settings',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('commerce_email_settings_form'),
+    'access arguments' => array('configure store'),
+    'weight' => 1,
+    'type' => MENU_LOCAL_TASK
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function commerce_email_theme() {
+
+  return array(
+    'commerce_order_email' => array(
+      'variables' => array('site' => NULL, 'order' => NULL, 'customer_profile' => NULL, 'language' => NULL),
+      'template' => 'theme/commerce-order-email'
+    ),
+    'commerce_account_email' => array(
+      'variables' => array('site' => NULL, 'user' => NULL, 'login' => NULL, 'language' => NULL),
+      'template' => 'theme/commerce-account-email'
+    ),
+    'commerce_admin_order_email' => array(
+      'variables' => array('site' => NULL, 'user' => NULL, 'login' => NULL, 'language' => NULL),
+      'template' => 'theme/commerce-admin-order-email'
+    ),
+  );
+}
+
+/**
+ * Add theme suggestion for users language
+ */
+function template_preprocess_commerce_order_email(&$variables) {
+  $variables['theme_hook_suggestions'][] = 'commerce_order_email__' . $variables['language'];
+}
+
+function template_preprocess_commerce_account_email(&$variables) {
+  $variables['theme_hook_suggestions'][] = 'commerce_account_email__' . $variables['language'];
+}
+
+function template_preprocess_commerce_admin_order_email(&$variables) {
+  $variables['theme_hook_suggestions'][] = 'commerce_admin_order_email__' . $variables['language'];
+}
+
+/**
+ * Admin system settings form
+ */
+function commerce_email_settings_form() {
+  
+  $form = array();
+  $admin_email = variable_get('admin_email', array());
+  
+  $form['admin_email'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Administration Email'),
+    '#collapsible' => FALSE,
+    '#collapsed' => FALSE,
+    '#tree' => TRUE,
+    '#weight' => 1,
+  );
+    
+  $form['admin_email']['enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Enable administrator order email'),
+    '#default_value' => (empty($admin_email['enabled'])) ? '' : $admin_email['enabled'],
+    '#description' => t('Send an email to the adminstration address when an order is complete'),
+    '#weight' => 2,
+  );
+  
+  $form['admin_email']['email_address'] = array(
+    '#type' => 'textfield',
+    '#size' => 64,
+    '#maxlength' => 128,
+    '#title' => t('Email address'),
+    '#description' => t('Send an email to the adminstration address when an order is complete.<br />Leave blank if same as site email'),
+    '#default_value' => (empty($admin_email['email_address'])) ? '' : $admin_email['email_address'],
+    '#required' => FALSE,
+    '#weight' => 3
+  );
+  
+  return system_settings_form($form);
+}
+
+function commerce_email_preprocess_token_tree(&$variables) {
+  if (array_intersect(array('node', 'user'), $variables['token_types'])) {
+    $variables['recursion_limit'] = 2;
+  }
+}
+
+/**
+ * Implements hook_form().
+ */
+function commerce_email_form($form, &$form_state) {
+
+  $languages = language_list('enabled');
+  $email_list = commerce_email_list_languages($languages[1]);
+
+  drupal_add_library('system', 'ui.tabs');
+  drupal_add_js('(function ($) { $(".commerce-email-tabs").tabs(); })(jQuery);', array('type' => 'inline', 'scope' => 'footer', 'weight' => 9));
+  
+  $weight = 2;
+
+  $form['settings'] = array(
+    '#type' => 'vertical_tabs'
+  );
+  
+  $form['tokens'] = array(
+    '#markup' => theme('token_tree', array('token_types' => array('commerce-order', 'commerce-customer-profile', 'commerce-email'), '#global_types' => FALSE)),
+    '#weight' => 99999
+  );
+  
+  foreach ($email_list as $type => $email) {
+    
+    foreach ($email as $lang => $e) {
+      
+      // Skip language undefined
+      if ($lang == LANGUAGE_NONE) { 
+        continue;
+      }
+      
+      if (!isset($form[$e->type])) {
+        
+        $form[$e->type] = array(
+          '#type' => 'fieldset',
+          '#title' => check_plain(t(ucwords(str_replace('_', ' ', $e->type)) . ' Email')),
+          '#collapsible' => FALSE,
+          '#collapsed' => FALSE,
+          '#weight' => $weight++,
+          '#group' => 'settings'
+        );
+      }
+      
+      $form[$e->type][$e->type . '_subject_' . $lang] = array(
+        '#type' => 'textfield',
+        '#size' => 128,
+        '#maxlength' => 128,
+        '#title' => t('Subject'),
+        '#default_value' => $e->subject,
+        '#required' => TRUE,
+        '#weight' => $weight++,
+        '#prefix' => '<div id="tabs-' . $lang . '">'
+      );
+  
+      $form[$e->type][$e->type . '_template_' . $lang] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Use template instead of textarea'),
+        '#default_value' => ($e->template) ? $e->template : 0,
+        '#description' => check_plain('Template: commerce-' . str_replace('_', '-', $e->type) . '-email.tpl.php, commerce-' . str_replace('_', '-', $e->type) . '-email--' . $lang . '.tpl.php'),
+        '#weight' => $weight++,
+      );
+      
+      $form[$e->type][$e->type . '_content_' . $lang] = array(
+        '#type' => 'text_format',
+        '#cols' => 60,
+        '#resizable' => FALSE,
+        '#rows' => 10,
+        '#title' => t('Content'),
+        '#default_value' => $e->content,
+        '#required' => TRUE,
+        '#weight' => $weight++,
+        '#format' => 'full_html'
+      );
+      
+      $form[$e->type][$e->type . '_type_' . $lang] = array(
+        '#type' => 'hidden',
+        '#value' => $e->type,
+        '#suffix' => '</div>',
+        '#weight' => $weight++,
+      );
+    }
+    
+    /**
+    * Language tabs
+    */
+    $tabs_html = '';
+    foreach ($email as $lang => $e) {
+      // Skip language undefined
+      if ($lang == LANGUAGE_NONE) {
+        continue;
+      }
+      $name = (empty($languages[1][$lang]->name)) ? 'Language undefined' : $languages[1][$lang]->name;
+      $tabs_html .= '<li>' . l($name, '', array('fragment' => 'tabs-' . $lang, 'external' => TRUE)) . '</a></li>';
+    }
+    
+    $form[$type]['tabs_start'] = array(
+      '#markup' => '<div class="commerce-email-tabs"><ul>' . $tabs_html . '</ul>',
+      '#weight' => 1,
+    );
+    $form[$type]['tabs_end'] = array(
+      '#markup' => '</div>',
+      '#weight' => $weight++,
+    );
+  }
+  
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save'),
+    '#weight' => 9999
+  );
+  
+  return $form;
+}
+
+function commerce_email_form_submit($form, &$form_state) {
+
+  $languages = language_list('enabled');
+  $languages = array_keys($languages[1]);
+  $email_types = commerce_email_list('enabled');
+
+  foreach ($email_types as $type) {
+    foreach ($languages as $lang) {
+      db_update('commerce_email')
+        ->fields(array(
+          'subject' => $form_state['values'][$type . '_subject_' . $lang],
+          'content' => $form_state['values'][$type . '_content_' . $lang]['value'],
+          'template' => $form_state['values'][$type . '_template_' . $lang]
+        ))
+        ->condition('type', $form_state['values'][$type . '_type_' . $lang])
+        ->condition('language', $lang)
+        ->execute();
+      
+      variable_set('commerce_email_' . $type . '_template_' . $lang, $form_state['values'][$type . '_template_' . $lang]);
+    }
+  }
+
+  drupal_set_message(t('Commerce emails updated'));
+}
+
+/**
+ * Returns a list of emails in all languages
+ * and automatically adds a version for each enabled language
+ *
+ * @param $languages
+ *   The assoc array of languages enabled on the site
+ *
+ * @return
+ *   array of available emails
+ */
+function commerce_email_list_languages($languages) {
+  
+  $email_list = commerce_email_list();
+
+  foreach ($email_list as $type => $email) {
+    foreach ($languages as $lang => $lang_detail) {
+      if (!isset($email_list[$type][$lang])) {
+        commerce_email_language_add($lang, $email_list[$type][LANGUAGE_NONE]);
+      }
+    }
+  }
+  
+  $admin_email = variable_get('admin_email', array());
+  if (empty($email_list['admin_order']) && !empty($admin_email['enabled'])) {
+    foreach ($languages as $lang => $lang_detail) {
+      $email = array(
+        'type' => 'admin_order',
+        'subject' => 'Customer Order [commerce-order:order-number] from [site:name]',
+        'content' => '<p>A customer at [site:name] has just placed an order.</p><p>[commerce-email:order-items]</p><p>You can view the complete order at:&nbsp;[site:url]admin/commerce/orders/[commerce-order:order-id]</p>',
+      );
+      commerce_email_language_add($lang, (object) $email);
+    }
+  }
+  elseif (!empty($email_list['admin_order']) && empty($admin_email['enabled'])) {
+    commerce_email_admin_order_remove();
+  }
+  
+  return commerce_email_list();
+}
+
+/**
+ * Removes the admin order email
+ */
+function commerce_email_admin_order_remove() {
+  
+  $deleted = db_delete('commerce_email')
+    ->condition('type', 'admin_order')
+    ->execute();
+}
+
+/**
+ * Adds a new language version of an email
+ *
+ * @param $lang
+ *   The language code for the new email
+ *   (i.e. EN,FR,DE)
+ *
+ * @param $base_email
+ *   Undefined language email object 
+ *
+ * @return
+ *   array of email subject and content
+ */
+function commerce_email_language_add($lang, $base_email) {
+  
+  $email_id = db_insert('commerce_email')
+    ->fields(array(
+      'type' => $base_email->type,
+      'language' => $lang,
+      'template' => 0,
+      'subject' => $base_email->subject,
+      'content' => $base_email->content,
+    ))
+    ->execute();
+}
+
+/**
+ * Returns an array of all defined emails
+ *
+ * @param $enabled
+ * (optional) Defaults to FALSE
+ *  Boolean to return enabled email names
+ *  or all the enabled email content
+ *
+ * @return
+ *   array of emails
+ */
+function commerce_email_list($enabled=FALSE) {
+  
+  if ($enabled) {
+    $result = db_select('commerce_email')
+      ->fields('commerce_email', array('type'))
+      ->groupBy('type')
+      ->execute();
+      
+    $array = array();
+    while ($row = $result->fetchObject()) {
+      $array[] = $row->type;
+    }
+    
+    return $array;  
+  }
+  
+  $result = db_select('commerce_email')
+    ->fields('commerce_email', array('email_id', 'type', 'template', 'content', 'subject', 'language'))
+    ->orderBy('type')
+    ->execute();
+    
+  $array = array();
+  while ($row = $result->fetchObject()) {
+    $array[$row->type][$row->language] = $row;
+  }
+  
+  return $array;  
+}
+
+/**
+ * Returns an email Subject and Content as an array
+ *
+ * @param $email_name
+ *   The name of an email to lookup
+ *
+ * @return
+ *   array of email subject and content
+ */
+function commerce_email_load($email_name) {
+  
+  global $language;
+  $result = db_select('commerce_email')
+    ->fields('commerce_email', array('email_id', 'type', 'template', 'subject', 'content', 'language'))
+    ->condition('type', $email_name)
+    ->condition('language', $language->language)
+    ->execute();
+    
+  if ($row = $result->fetchObject()) {
+    return array($row->subject, $row->content);
+  }
+
+  return 0;
+}
+
+/**
+ * Returns a rendered email of the commerce order
+ * or an array of the order details
+ *
+ * @param $order
+ *   The commerce order object
+ *   
+ * @param $theme
+ * (optional) Defaults to FALSE
+ *   Flag to return the contents of the order
+ *   as a html table or an array
+ *   
+ * @return
+ *   String containing the rendered order table
+ *   or an array of the order
+ */
+function commerce_email_order_items($order, $theme=TRUE) {
+  
+  $wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $currency_code = $wrapper->commerce_order_total->currency_code->value();
+  $amount = number_format(commerce_currency_amount_to_decimal($wrapper->commerce_order_total->amount->value(), $currency_code), 2);
+
+  $header = array(
+    array('data' => t('Product'), 'style' => array('text-align: left;')),
+    array('data' => t('Qty'), 'style' => array('text-align: left;')),
+    array('data' => t('Price (@currency_code)', array('@currency_code' => $currency_code)), 'style' => array('text-align: left;'))
+  );
+
+  $rows = array();
+  foreach ($wrapper->commerce_line_items as $delta => $line_item_wrapper) {
+    
+    switch ($line_item_wrapper->type->value()) {
+      case 'product':
+        // Special treatment for a product, since we want to get the title from
+        // from the product entity instead of the line item.
+        $title = htmlentities($line_item_wrapper->commerce_product->title->value(), ENT_QUOTES, "UTF-8");
+        $title .= commerce_email_order_item_attributes($line_item_wrapper->commerce_product->product_id->value());
+        
+        $rows[] = array(
+          'data' => array(
+            array('data' => $title, 'style' => array('text-align: left;')),
+            array('data' => $line_item_wrapper->quantity->value(), 'style' => array('text-align: left;')),
+            array('data' => number_format(commerce_currency_amount_to_decimal($line_item_wrapper->commerce_unit_price->amount->value(), $currency_code), 2), 'style' => array('text-align: left;')),
+          )
+        );
+        break;
+      default:
+        // Use this for any other line item.
+        $rows[] = array(
+          'data' => array(
+            array('data' => htmlentities($line_item_wrapper->line_item_label->value(), ENT_QUOTES, "UTF-8"), 'style' => array('text-align: left;')),
+            array('data' => 1, 'style' => array('text-align: left;')),
+            array('data' => number_format(commerce_currency_amount_to_decimal($line_item_wrapper->commerce_unit_price->amount->value(), $currency_code), 2), 'style' => array('text-align: left;')),
+          )
+        );
+        break;
+    }
+  }
+  
+  $data = $wrapper->commerce_order_total->data->value();
+  if (!empty($data['components'])) {
+    
+    foreach ($data['components'] as $key => &$component) {
+      
+      if ($data['components'][$key]['name'] == 'base_price') {
+        $rows[] = array(
+          'data' => array(
+            ' ',
+            array('data' => t('Subtotal:'), 'style' => array('font-weight: bold; text-align: right;')),
+            array('data' => number_format(commerce_currency_amount_to_decimal($data['components'][$key]['price']['amount'], $currency_code), 2), 'style' => array('font-weight: bold; text-align: left;')),
+          )
+        );
+      }
+      elseif (preg_match('/^tax\|/', $data['components'][$key]['name'])) {
+        $rows[] = array(
+          'data' => array(
+            ' ',
+            array('data' => $data['components'][$key]['price']['data']['tax_rate']['display_title'] . ':', 'style' => array('font-weight: bold; text-align: right;')),
+            array('data' => number_format(commerce_currency_amount_to_decimal($data['components'][$key]['price']['amount'], $currency_code), 2), 'style' => array('font-weight: bold; text-align: left;')),
+          )
+        ); 
+      }
+    }
+  }
+
+  $rows[] = array(
+    'data' => array(
+      ' ',
+      array('data' => t('Total:'), 'style' => array('font-weight: bold; text-align: right;')),
+      array('data' => $amount, 'style' => array('font-weight: bold; text-align: left;')),
+    )
+  );
+
+  if ($theme) {
+    return theme('table', array('header' => $header, 'rows' => $rows, 'attributes' => array('style' => array('width: 50%; border: 1px solid #ddd;'))));
+  }
+  else {
+    return array('header' => $header, 'rows' => $rows, 'attributes' => array('style' => array('width: 50%; border: 1px solid #ddd;')));
+  }
+}
+
+/**
+ * Returns the labels and values of any attributes 
+ * selected on the product.
+ *
+ * @param $product_id
+ *   A commerce product id
+ *   
+ * @return
+ *   String containing the attributes
+ */
+function commerce_email_order_item_attributes($product_id) {
+
+  $product = commerce_product_load($product_id);
+  $product_wrapper = entity_metadata_wrapper('commerce_product', $product);
+  
+  $instances = field_info_instances('commerce_product', $product->type);
+  $attr = array();
+  foreach ($instances as $name => $instance) {
+    $commerce_cart_settings = commerce_cart_field_instance_attribute_settings($instance);
+    if ($commerce_cart_settings['attribute_field'] == 1) {
+      $field = field_info_field($instance['field_name']);
+      if (!empty($product_wrapper->$field['field_name']->value()->name)) {
+        $attr[] = htmlentities($instance['label'] . ': ' . $product_wrapper->$field['field_name']->value()->name, ENT_QUOTES, "UTF-8");
+      }
+    }
+  }
+  
+  $title_attr = '';
+  if (!empty($attr)) {
+    $title_attr .= '<br /><em>' . join("<br />", $attr) . '</em>';
+  }
+  
+  return $title_attr;
+}
+
+/**
+ * Get the customers profile from the order
+ * using the billing or shipping address 
+ *
+ * @param $order
+ *   The order object
+ *   
+ * @return $customer_profile
+ *   Customer profile object
+ */
+function commerce_email_customer_profile($order) {
+  
+  if (!empty($order->commerce_customer_billing) && isset($order->commerce_customer_billing[LANGUAGE_NONE][0]['profile_id']) && is_numeric($order->commerce_customer_billing[LANGUAGE_NONE][0]['profile_id'])) {
+    $customer_profile = commerce_customer_profile_load($order->commerce_customer_billing[LANGUAGE_NONE][0]['profile_id']);
+    return $customer_profile;
+  }
+  elseif (!empty($order->commerce_customer_shipping) && isset($order->commerce_customer_shipping[LANGUAGE_NONE][0]['profile_id']) && is_numeric($order->commerce_customer_shipping[LANGUAGE_NONE][0]['profile_id'])) {
+    $customer_profile = commerce_customer_profile_load($order->commerce_customer_shipping[LANGUAGE_NONE][0]['profile_id']);
+    return $customer_profile;
+  }
+}
+
+/**
+ * Get the customers name from the Customer profile
+ * using the billing or shipping address.
+ * Defaults to customer email
+ *
+ * @param $order
+ *   The order object
+ *
+ * @param $customer_profile
+ *   Customer profile object
+ *   
+ * @return $order
+ *   The order object with updated
+ *   Customer name
+ */
+function commerce_email_customer_name(&$order, $customer_profile) {
+  
+  if (!empty($customer_profile->commerce_customer_address)) {
+    $order->customer_name = (!empty($customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['first_name']) && !empty($customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['last_name'])) ? $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['first_name'] . ' ' . $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['last_name'] : $customer_profile->commerce_customer_address[LANGUAGE_NONE][0]['name_line'];
+  }
+  else {
+    $order->customer_name = $order->mail;
+  }
+}
+
+/**
+ * Checks the current DefaultMailSystem for MimeMail
+ * and Sends an HTML email through MimeMail or Commerce Email
+ *
+ * @see http://drupal.org/project/mimemail
+ *
+ * @param $key
+ *   The message identifier
+ *   
+ * @param $message
+ *   The message array
+ */
+function commerce_email_mailsystem_send($key, $message) {
+  
+  $configuration = variable_get('mail_system', array('default-system' => 'DefaultMailSystem'));
+  
+  if (module_exists('mimemail')) {
+    $system = drupal_mail_system('mimemail', $key);
+    $message = $system->format($message);
+  }
+  else {
+    $system = drupal_mail_system('commerce_email', $key);
+  }
+  
+  $system->mail($message);
+}
+
+/**
+ * Modify the drupal mail system to send HTML emails.
+ */
+class CommerceMailSystem implements MailSystemInterface {
+  /**
+   * Concatenate and wrap the e-mail body for plain-text mails.
+   *
+   * @param $message
+   *   A message array, as described in hook_mail_alter().
+   *
+   * @return
+   *   The formatted $message.
+   */
+  public function format(array $message) {
+    $message['body'] = implode("\n\n", $message['body']);
+    return $message;
+  }
+
+  /**
+   * Send an e-mail message, using Drupal variables and default settings.
+   *
+   * @see http://php.net/manual/en/function.mail.php
+   * @see drupal_mail()
+   *
+   * @param $message
+   *   A message array, as described in hook_mail_alter().
+   * @return
+   *   TRUE if the mail was successfully accepted, otherwise FALSE.
+   */
+  public function mail(array $message) {
+    $mimeheaders = array();
+    foreach ($message['headers'] as $name => $value) {
+      $mimeheaders[] = $name . ': ' . mime_header_encode($value);
+    }
+    $line_endings = variable_get('mail_line_endings', MAIL_LINE_ENDINGS);
+    
+    if (isset($message['headers']['Return-Path']) && !ini_get('safe_mode')) {
+      return mail(
+        $message['to'],
+        mime_header_encode($message['subject']),
+        // Note: e-mail uses CRLF for line-endings. PHP's API requires LF
+        // on Unix and CRLF on Windows. Drupal automatically guesses the
+        // line-ending format appropriate for your system. If you need to
+        // override this, adjust $conf['mail_line_endings'] in settings.php.
+        preg_replace('@\r?\n@', $line_endings, $message['body']),
+        // For headers, PHP's API suggests that we use CRLF normally,
+        // but some MTAs incorrectly replace LF with CRLF. See #234403.
+        join("\n", $mimeheaders),
+        // Pass the Return-Path via sendmail's -f command.
+        '-f ' . $message['Return-Path']
+      );
+    }
+    else {
+      return mail(
+        $message['to'],
+        mime_header_encode($message['subject']),
+        // Note: e-mail uses CRLF for line-endings. PHP's API requires LF
+        // on Unix and CRLF on Windows. Drupal automatically guesses the
+        // line-ending format appropriate for your system. If you need to
+        // override this, adjust $conf['mail_line_endings'] in settings.php.
+        preg_replace('@\r?\n@', $line_endings, $message['body']),
+        // For headers, PHP's API suggests that we use CRLF normally,
+        // but some MTAs incorrectly replace LF with CRLF. See #234403.
+        join("\n", $mimeheaders)
+      );
+    }
+  }
+}

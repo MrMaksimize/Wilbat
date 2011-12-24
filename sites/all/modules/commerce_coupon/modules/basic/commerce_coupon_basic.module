@@ -1,0 +1,305 @@
+<?php
+
+/**
+ * @file
+ * Coupon..
+ *
+ * This file contains...
+ */
+
+/**
+ * Implements hook_commerce_coupon_type_configure().
+ */
+function commerce_coupon_basic_commerce_coupon_type_configure($bundle, $reset = FALSE) {
+  // Skip all $bundles except the basic coupon type
+  if ($bundle != 'basic_coupon') {
+    return;
+  }
+
+  $entity_type = 'commerce_coupon';
+
+  // If a field type we know should exist isn't found, clear the Field cache.
+  if (!field_info_field_types('commerce_price')) {
+    field_cache_clear();
+  }
+
+  // Look for or add the specified fixed amount
+  $field_name = 'commerce_coupon_fixed_amount';
+  $field = field_info_field($field_name);
+  $instance = field_info_instance($entity_type, $field_name, $bundle);
+  $weight = 0;
+
+  if (empty($field) || $reset) {
+    $field_data = array(
+      'field_name' => $field_name,
+      'type' => 'commerce_price',
+      'label' => t('Fixed Amount'),
+      'cardinality' => 1,
+      'entity_types' => array($entity_type),
+      'translatable' => FALSE,
+      'locked' => FALSE,
+    );
+
+    if (empty($field)) {
+      $field = field_create_field($field_data);
+    }
+    else {
+      $field = field_update_field($field_data);
+    }
+  }
+
+  if (empty($instance) || $reset) {
+    $instance_data = array(
+      'field_name' => $field_name,
+      'entity_type' => $entity_type,
+      'bundle' => $bundle,
+
+      'label' => t('Fixed Amount'),
+      'required' => FALSE,
+      'settings' => array(),
+
+      // Because this widget is locked, we need it to use the full price widget
+      // since the currency option can't be adjusted at the moment.
+      'widget' => array(
+        'type' => 'commerce_price_full',
+        'weight' => $weight,
+        'settings' => array(
+          'currency_code' => 'default',
+        ),
+      ),
+      'default_value' => array(
+        array(
+          'amount' => 0,
+          'currency_code' => commerce_default_currency(),
+          'data' => array(
+            'components' => array(),
+          ),
+        ),
+      ),
+      'display' => array(),
+    );
+
+    if (empty($instance)) {
+      field_create_instance($instance_data);
+    }
+    else {
+      field_update_instance($instance_data);
+    }
+  }
+
+
+
+  // Look for or add the specified percentage amount
+  $field_name = 'commerce_coupon_percent_amount';
+  $field = field_info_field($field_name);
+  $instance = field_info_instance($entity_type, $field_name, $bundle);
+
+  if (empty($field) || $reset) {
+    $field_data = array(
+      'field_name' => $field_name,
+      'type' => 'number_decimal',
+      'label' => t('Percentage Amount'),
+      'cardinality' => 1,
+      'entity_types' => array($entity_type),
+      'translatable' => FALSE,
+      'locked' => FALSE,
+      'settings' => array(
+        'decimal_separator' => '.',
+        'precision' => '10',
+        'scale' => '2',
+      ),
+    );
+
+    if (empty($field)) {
+      $field = field_create_field($field_data);
+    }
+    else {
+      $field = field_update_field($field_data);
+    }
+  }
+
+  if (empty($instance) || $reset) {
+    $instance_data = array(
+      'field_name' => $field_name,
+      'entity_type' => $entity_type,
+      'bundle' => $bundle,
+
+      'label' => t('Percentage Amount'),
+      'required' => FALSE,
+      'display' => array(),
+      'settings' => array(
+        'min' => '0',
+        'max' => '100',
+        'suffix' => '%',
+      ),
+    );
+
+    if (empty($instance)) {
+      field_create_instance($instance_data);
+    }
+    else {
+      field_update_instance($instance_data);
+    }
+  }
+
+
+  // Look for or add the specified percentage amount
+  $field_name = 'commerce_coupon_number_of_uses';
+  $field = field_info_field($field_name);
+  $instance = field_info_instance($entity_type, $field_name, $bundle);
+
+  if (empty($field) || $reset) {
+    $field_data = array(
+      'field_name' => $field_name,
+      'type' => 'number_integer',
+      'label' => t('Maximum Number of Uses'),
+      'cardinality' => 1,
+      'entity_types' => array($entity_type),
+      'translatable' => FALSE,
+      'locked' => FALSE,
+      'settings' => array(),
+    );
+
+    if (empty($field)) {
+      $field = field_create_field($field_data);
+    }
+    else {
+      $field = field_update_field($field_data);
+    }
+  }
+
+  if (empty($instance) || $reset) {
+    $instance_data = array(
+      'field_name' => $field_name,
+      'entity_type' => $entity_type,
+      'bundle' => $bundle,
+
+      'label' => t('Number of Uses'),
+      'required' => FALSE,
+      'display' => array(),
+      'settings' => array(
+        'min' => '0',
+      ),
+      'default_value' => array(
+        0 => array(
+          'value' => 1
+        )
+      ),
+    );
+
+
+    if (empty($instance)) {
+      field_create_instance($instance_data);
+    }
+    else {
+      field_update_instance($instance_data);
+    }
+  }
+}
+
+/**
+ * Implementation of hook_entity_presave()
+ */
+function commerce_coupon_basic_entity_presave($entity, $type) {
+  if ($type == 'commerce_order') {
+    // We need to recalc the percentage amounts. We need to this every time, because
+    // something could be changed since we add the coupon. Important this hook will
+    // be invoked before the rule event. It can be that the order needs to be stored
+    // twice to avoid incorrect calcuations.
+    commerce_coupon_basic_apply_percentage_amounts($entity);
+  }
+}
+
+/**
+ * Apply percentage amounts to an order.
+ *
+ */
+function commerce_coupon_basic_apply_percentage_amounts($commerce_order) {
+  if (!($commerce_order instanceof EntityMetadataWrapper)) {
+    $commerce_order = entity_metadata_wrapper('commerce_order', $commerce_order);
+  }
+
+  $order_id = $commerce_order->order_id->value();
+  $coupons = commerce_coupon_get_coupons_by_order($order_id);
+  $components = rules_get_components(FALSE, 'action');
+
+  if (isset($commerce_order->commerce_order_total->currency_code)) {
+    $currency_code = $commerce_order->commerce_order_total->currency_code->value();
+  }
+
+  // We calculate for each coupon the percentage amount, and update / insert
+  // a corresponding line item.
+  foreach ($coupons as $coupon) {
+
+    if (!($coupon instanceof EntityMetadataWrapper)) {
+      $coupon = entity_metadata_wrapper('commerce_coupon', $coupon);
+    }
+    $coupon_id = $coupon->coupon_id->value();
+
+    $fields = $coupon->getPropertyInfo();
+
+    $component_name = 'commerce_coupon_apply_' . $coupon->type->type->value() . '_to_item_line';
+    if (isset($fields['commerce_coupon_percent_amount'])
+      && $coupon->commerce_coupon_percent_amount->value() > 0
+      && isset($components[$component_name])
+    ) {
+      // Iterate over all line items and calculate the reduaction of each
+      // line item:
+
+      $coupon_line_item = NULL;
+      foreach ($commerce_order->commerce_line_items as $line_item) {
+
+        // Find line item associated with this coupon:
+        if ($line_item->type->value() == 'coupon' && $line_item->commerce_coupon_reference->value() == $coupon_id) {
+          $coupon_line_item = $line_item;
+        }
+        elseif ($line_item->type->value() != 'coupon') {
+          // Invoke it with the line item.
+          rules_invoke_component($component_name, $line_item, $coupon);
+        }
+      }
+
+      $amounts = &drupal_static('commerce_coupon_basic_apply_percentage_coupon_to_item_line');
+      $coupon_amount = array_sum($amounts[$order_id][$coupon_id]);
+
+      $line_item_is_new = FALSE;
+
+      // Create new line item if there is no one.
+      if ($coupon_line_item == NULL) {
+        $coupon_line_item = commerce_coupon_line_item_new($coupon->value(), $order_id);
+        $coupon_line_item->commerce_unit_price = array();
+        $line_item_is_new = TRUE;
+      }
+
+      if (!($coupon_line_item instanceof EntityMetadataWrapper)) {
+        $coupon_line_item = entity_metadata_wrapper('commerce_line_item', $coupon_line_item);
+      }
+
+      // Set the unit price on the line item object.
+      $coupon_line_item->commerce_unit_price = array();
+      $coupon_line_item->commerce_unit_price->amount = $coupon_amount;
+      $coupon_line_item->commerce_unit_price->currency_code = $currency_code;
+
+      if (commerce_price_component_load($coupon_line_item->commerce_unit_price->value(), 'commerce_coupon_' . $coupon->type->value())) {
+        commerce_price_component_delete($coupon_line_item->commerce_unit_price->value(), 'commerce_coupon_' . $coupon->type->value());
+      }
+
+
+      $coupon_line_item->commerce_unit_price->data = commerce_price_component_add(
+        $coupon_line_item->commerce_unit_price->value(),
+        'commerce_coupon_' . $coupon->type->value(),
+        $coupon_line_item->commerce_unit_price->value(),
+        TRUE,
+        FALSE
+      );
+
+      $coupon_line_item->save();
+      if ($line_item_is_new) {
+        $commerce_order->commerce_line_items[] = $coupon_line_item;
+      }
+
+      // TODO: Update the $coupon with the new $amount
+
+    }
+  }
+}

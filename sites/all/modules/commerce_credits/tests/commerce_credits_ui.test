@@ -1,0 +1,64 @@
+<?php
+
+/**
+ * Test the CommerceCredits UI module.
+ */
+class CommerceCreditsUITest extends DrupalWebTestCase {
+
+  public static function getInfo() {
+    return array(
+      'name' => 'Commerce credits UI test',
+      'description' => 'Tests the commerce credits UI',
+      'group' => 'Commerce credits',
+    );
+  }
+
+  function setUp() {
+    parent::setUp('commerce_credits', 'commerce_credits_ui', 'commerce_product', 'commerce_product_reference', 'commerce_line_item', 'commerce_order', 'commerce_checkout', 'views');
+  }
+
+
+  /**
+   * Tests the credits UI.
+   *
+   * Covered functionality:
+   *  - user credits balance view
+   */
+  function testCreditsUI() {
+    $credit_type = $this->createCreditType('credit');
+    $user = $this->drupalCreateUser();
+    $this->drupalLogin($user);
+    $path = 'user/' . $user->uid . '/credits-user-balance';
+    $this->drupalGet($path);
+
+    // Check empty balance view.
+    $this->assertText('You do not have any credit.', 'Credits balance correctly empty.');
+
+    // Add credits.
+    $user_wrapper = entity_metadata_wrapper('user', $user);
+    commerce_credits_add_credits($user_wrapper, $credit_type->name, 5);
+    $this->drupalGet($path);
+    $this->assertText('credit-type-label', 'Credits balance correctly shows credit type label.');
+    $this->assertText('credit-type-description', 'Credits balance correctly shows credit type description.');
+    $this->assertText('5', 'Credits balance correctly shows credit number.');
+  }
+
+
+  function createCreditType($credit_type_name) {
+    // Add a new credit type.
+    $credit_type_values = array(
+      'label' => 'credit-type-label',
+      'name' => $credit_type_name,
+      'description' => 'credit-type-description',
+      'duration' => 0,
+      'type' => 'credit',
+    );
+    $credit_type = entity_create('commerce_credits_type', $credit_type_values);
+    $wrapper = entity_metadata_wrapper('commerce_credits_type', $credit_type);
+    $wrapper->save();
+
+    $this->assertTrue($wrapper->cid->value(), 'Credit type has been created');
+    $this->assertEqual($credit_type->label, $credit_type_values['label'], 'The label has been correctly saved.');
+    return $credit_type;
+  }
+}

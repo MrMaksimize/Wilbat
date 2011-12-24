@@ -1,0 +1,13 @@
+name = Flat Rate
+description = Provides an example shipping method for testing and development.
+package = Commerce (shipping)
+dependencies[] = commerce
+dependencies[] = commerce_shipping
+core = 7.x
+
+; Information added by drupal.org packaging script on 2011-08-25
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_shipping_flat_rate"
+datestamp = "1314230978"
+

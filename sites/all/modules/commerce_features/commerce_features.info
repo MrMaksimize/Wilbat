@@ -1,0 +1,13 @@
+name = Commerce Features
+description = Features integration for Drupal Commerce module
+package = Features
+core = 7.x
+
+dependencies[] = features
+dependencies[] = commerce
+; Information added by drupal.org packaging script on 2011-11-14
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_features"
+datestamp = "1321272357"
+

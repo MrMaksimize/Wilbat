@@ -1,0 +1,108 @@
+<?php
+/**
+ * @file
+ * Install file for Commerce Email
+ * Sets default emails and settings
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function commerce_email_schema() {
+  $schema = array();
+
+  $schema['commerce_email'] = array(
+    'description' => 'The base table for emails.',
+    'fields' => array(
+      'email_id' => array(
+        'description' => 'The primary identifier for an email.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'type' => array(
+        'description' => 'The type of email.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'language' => array(
+        'description' => 'Language of the email content',
+        'type' => 'varchar',
+        'length' => 12,
+        'not null' => TRUE,
+        'default' => LANGUAGE_NONE,
+      ),
+      'template' => array(
+        'description' => 'Boolean value indicating whether or not the email is in template or textarea',
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'subject' => array(
+        'description' => 'The email subject',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'content' => array(
+        'description' => 'The email content',
+        'type' => 'text',
+        'not null' => TRUE,
+        'size' => 'big',
+      )
+    ),
+    'primary key' => array('email_id'),
+    'unique keys' => array(
+      'email_type' => array('type', 'language')
+    )
+  );
+
+  return $schema;
+}
+
+/**
+ * Implements hook_install().
+ */
+function commerce_email_install() {
+
+  // Insert default HTML order email
+  $data = array(
+    'type' => 'order',
+    'language' => LANGUAGE_NONE,
+    'subject' => 'Order [commerce-order:order-number] at [site:name]',
+    'content' => '<p>Thanks for your order [commerce-order:order-number] at [site:name].</p><p>[commerce-email:order-items]</p><p>If this is your first order with us, you will receive a separate e-mail with login instructions.</p><p>You can view your order history with us at any time by logging into our website at: [site:login-url]</p><p>You can find the status of your current order at: [site:url]user/[commerce-order:uid]/orders/[commerce-order:order-id]</p><p>Please contact us if you have any questions about your order.</p><p>Commerce Email - Textarea</p>',
+  );
+  drupal_write_record('commerce_email', $data);
+
+  // Insert default HTML account email
+  $data = array(
+    'type' => 'account',
+    'language' => LANGUAGE_NONE,
+    'subject' => 'An administrator created an account for you at [site:name]',
+    'content' => '<p>[user:name],</p><p>A site administrator at [site:name] has created an account for you. You may now log in by clicking this link or copying and pasting it to your browser:</p><p>[user:one-time-login-url]</p><p>This link can only be used once to log in and will lead you to a page where you can set your password.</p><p>After setting your password, you will be able to log in at [site:login-url] in the future using:</p><p>username: [user:name]</p><p>password: Your password</p><p>--  [site:name] team</p>'
+  );
+  drupal_write_record('commerce_email', $data);
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function commerce_email_uninstall() {
+
+  variable_del('admin_email');
+
+  $languages = language_list('enabled');
+  foreach ($languages[1] as $k => $lang) {
+    variable_del('commerce_email_order_template_' . $k);
+    variable_del('commerce_email_account_template_' . $k);
+    variable_del('commerce_email_admin_order_template_' . $k);
+  }
+
+  variable_del('commerce_email_order_template_' . LANGUAGE_NONE);
+  variable_del('commerce_email_account_template_' . LANGUAGE_NONE);
+  variable_del('commerce_email_admin_order_template_' . LANGUAGE_NONE);
+}

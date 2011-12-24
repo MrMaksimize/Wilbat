@@ -1,0 +1,17 @@
+name = Product Bundle
+description = Enables the bundling of products.
+package = "Commerce Product Enhancements"
+dependencies[] = commerce_product
+dependencies[] = commerce_product_attributes
+core = 7.x
+
+; Rules
+files[] = commerce_product_bundle.rules.inc
+files[] = commerce_product_bundle.rules_defaults.inc
+
+; Information added by drupal.org packaging script on 2011-12-22
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_product_bundle"
+datestamp = "1324512586"
+

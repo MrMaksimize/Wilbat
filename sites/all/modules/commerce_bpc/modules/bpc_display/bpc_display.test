@@ -1,0 +1,310 @@
+<?php
+
+/**
+ * @file
+ * Tests for Commerce BPC display node creation
+ */
+
+class BpcDisplayTestCase extends CommerceBpcBaseTestCase {
+
+  protected $bulk_url = 'admin/commerce/products/add-bulk/';
+
+  public static function getInfo() {
+    return array(
+      'name' => 'Commerce BPC display node functionality',
+      'description' => 'Test the Commerce BPC display node functionality.',
+      'group' => 'Commerce (contrib)',
+    );
+  }
+
+  function setUp($add_modules = array()) {
+    parent::setUp(array('bpc_display') + $add_modules);
+
+    $this->bulk_url = 'admin/commerce/products/add-bulk/' . $this->product_type['type'];
+
+    $this->createDummyProductDisplayContentType('product_display', TRUE, 'field_product', -1);
+
+    // Add list field to product type.
+    $field = $this->attachNewListField($this->product_type, 2);
+    $options = array_keys($field['settings']['allowed_values']);
+
+    // Prepare params
+    $price = rand(2, 500);
+
+    $this->params = array(
+      'sku_fragment' => $this->randomName(5),
+      'title_fragment' => $this->randomName(10),
+      'commerce_price[' . LANGUAGE_NONE . '][0][amount]' => $price,
+      'static_values[status]' => 1,
+    );
+
+    foreach ($options as $option) {
+      $this->params['combinations[' . $field['field_name'] . '][' . LANGUAGE_NONE . '][' . $option . ']'] = TRUE;
+    }
+
+    $permissions = $this->permissionBuilder(array('site admin', 'store admin'));
+    $permissions = array_merge($permissions, array('configure commerce bpc'));
+
+    $this->adminUser = $this->drupalCreateUser($permissions);
+    $this->drupalLogin($this->adminUser);
+  }
+
+  /**
+   * Tests wizard-style display node creation.
+   */
+  function testWizardNodeCreation() {
+    $this->setDisplaySetting(array(
+      'creation_method' => 'wizard',
+      'auto_node_title_pattern' => 'Title: [bulk_defaults:entered_title]',
+    ));
+
+    // "Create product" submission should still redirect to the product list
+    $this->submitBulkForm();
+    $this->assertUrl('admin/commerce/products');
+
+    // With only one display node type, we should directly go to the populated
+    // node form
+    $this->submitBulkForm('Create products and Create display');
+    // The 3rd and 4th product have been created in this round.
+    $this->assertTitle('Create product_display | Drupal');
+    $this->assertNodeFormPopulated(array(3, 4));
+
+    $this->createDummyProductDisplayContentType('product_display2', TRUE, 'field_product', -1);
+
+    $this->setDisplaySetting(array(
+      'auto_content_type' => 'product_display2',
+    ));
+
+    // With two display node types, and a preselected node type, we should
+    // to directly to that node form.
+    $this->submitBulkForm('Create products and Create display');
+    $this->assertTitle('Create product_display2 | Drupal');
+    // The 3rd and 4th product have been created in this round.
+    $this->assertNodeFormPopulated(array(5, 6));
+
+    $this->setDisplaySetting(array(
+      'auto_content_type' => '_none',
+    ));
+    $this->submitBulkForm('Create products and Create display');
+
+    // With two display node types and no preselected node type, we should
+    // be shown a selection form.
+    $this->assertTitle('Create display node | Drupal');
+    $this->drupalPost($this->getUrl(), array('node_type' => 'product_display'), 'Create node');
+
+    $this->assertTitle('Create product_display | Drupal');
+    $this->assertNodeFormPopulated(array(7, 8));
+  }
+
+  /**
+   * Tests the automatic creation of a single display node.
+   */
+  function testSingleNodeCreation() {
+    $this->setDisplaySetting(array(
+      'creation_method' => 'auto',
+      'auto_node_title_pattern' => 'Title: [bulk_defaults:entered_title]',
+      'auto_content_type' => 'product_display',
+    ));
+    $this->drupalGet($this->bulk_url);
+    $this->assertNoText('Create Products and Create Display');
+
+    $this->submitBulkForm();
+    // Default setting: We should be redirected to the product listing.
+    $this->assertUrl('admin/commerce/products');
+    $this->assertDisplayExists(array(1, 2));
+    $this->assertNoDisplayExists(array(1));
+    $this->assertNoDisplayExists(array(2));
+    $nodes = $this->findDisplaysFor(array(1, 2));
+    $node = reset($nodes);
+    $this->assertEqual(
+      $node->title,
+      'Title: ' . $this->params['title_fragment'],
+      "The title of the auto-generated node is the token-replaced value of the corresponding setting."
+    );
+
+    $this->setDisplaySetting(array(
+      'auto_redirect' => 'display node',
+    ));
+    $this->submitBulkForm();
+    $this->assertDisplayExists(array(3, 4));
+    $this->assertNoDisplayExists(array(3));
+    $this->assertNoDisplayExists(array(4));
+    $nodes = $this->findDisplaysFor(array(3, 4));
+    $node = reset($nodes);
+    $this->assertEqual(
+      $node->title,
+      'Title: ' . $this->params['title_fragment'],
+      "The title of the auto-generated node is the token-replaced value of the corresponding setting."
+    );
+    $nid = $node->nid;
+    $this->assertUrl('node/' . $nid);
+
+    $this->setDisplaySetting(array(
+      'auto_redirect' => 'custom',
+      'auto_redirect_custom' => 'admin/commerce',
+    ));
+    $this->submitBulkForm();
+    $this->assertDisplayExists(array(5, 6));
+    $this->assertNoDisplayExists(array(5));
+    $this->assertNoDisplayExists(array(6));
+    $this->assertUrl('admin/commerce');
+
+    $this->createDummyProductDisplayContentType('product_display2', TRUE, 'field_product', -1);
+
+    $this->setDisplaySetting(array(
+      'auto_content_type' => 'product_display2',
+    ));
+    $this->submitBulkForm();
+    $this->assertNoDisplayExists(array(7, 8), 'product_display');
+    $this->assertDisplayExists(array(7, 8), 'product_display2');
+  }
+
+  /**
+   * Tests the automatic creation of a one display node per product.
+   */
+  function testOneToOneNodeCreation() {
+    $this->setDisplaySetting(array(
+      'creation_method' => 'onetoone',
+      'auto_node_title_pattern' => 'Title: [bulk_defaults:entered_title]',
+      'auto_content_type' => 'product_display',
+    ));
+    $this->drupalGet($this->bulk_url);
+    $this->assertNoText('Create Products and Create Display');
+
+    $this->submitBulkForm();
+    $this->assertUrl('admin/commerce/products');
+    $this->assertNoDisplayExists(array(1, 2));
+    $this->assertDisplayExists(array(1));
+    $this->assertDisplayExists(array(2));
+  }
+
+  /**
+   * Asserts that a display node exists that references all and only all the
+   * given products.
+   *
+   * @param $product_ids
+   *   An array of product ids that should be referenced by the display node.
+   * @param $type
+   *   (optional) The node type to which the search should be restricted.
+   *   Defaults to 'product_display'.
+   */
+  function assertDisplayExists($product_ids, $type = 'product_display') {
+    $this->assertTrue(
+      $this->displayExists($product_ids, $type),
+      "The created products are referenced by a display node."
+    );
+  }
+ /**
+   * Asserts that no display node exists that references all and only all the
+   * given products.
+   *
+   * @param $product_ids
+   *   An array of product ids that should be referenced by the display node.
+   * @param $type
+   *   (optional) The node type to which the search should be restricted.
+   *   Defaults to 'product_display'.
+   */
+  function assertNoDisplayExists($product_ids, $type = 'product_display') {
+    $this->assertFalse(
+      $this->displayExists($product_ids, $type),
+      "The given products are not referenced by a display node."
+    );
+  }
+  /**
+   * Determines wether a display node exists that references all and only all
+   * the given products.
+   *
+   * @param $product_ids
+   *   An array of product ids that should be referenced by the display node.
+   * @param $type
+   *   (optional) The node type to which the search should be restricted.
+   *   Defaults to 'product_display'.
+   *
+   * @return
+   *   Boolean indicating whether such a display node exists.
+   */
+  protected function displayExists($product_ids, $type = 'product_display') {
+    $nodes = $this->findDisplaysFor($product_ids, $type);
+    foreach ($nodes as $node) {
+      if (count($node->field_product[LANGUAGE_NONE]) == count($product_ids)) {
+        return TRUE;
+      }
+    }
+    return FALSE;
+  }
+  /**
+   * Retrieves all display nodes referencing (at least) a given set of products.
+   *
+   * @param $product_ids
+   *   An array of product IDs. Only display nodes that reference all these
+   *   products will be returned.
+   * @param $type
+   *   (optional) The node type to which the search should be restricted.
+   *   Defaults to 'product_display'.
+   *
+   * @return
+   *   An array of fully-loaded node objects.
+   */
+  protected function findDisplaysFor($product_ids, $type = 'product_display') {
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', 'node')
+      ->entityCondition('bundle', $type);
+    foreach ($product_ids as $id) {
+      $query->fieldCondition('field_product', 'product_id', $id);
+    }
+    $result = $query->execute();
+    if (!empty($result['node'])) {
+      return entity_load('node', array_keys($result['node']));
+    }
+    else {
+      return array();
+    }
+  }
+  /**
+   * Asserts that the node form is pre-populated with the correct values.
+   *
+   * @param $product_ids
+   *   An array of product IDs that should be selected in the form.
+   */
+  function assertNodeFormPopulated($product_ids) {
+    $this->assertFieldByName('title', 'Title: ' . $this->params['title_fragment'], 'Title field is pre-populated with token-replaced settings value.');
+
+    foreach ($product_ids as $id) {
+      $this->assertOptionSelected('edit-field-product-und', $id);
+    }
+
+    if (!empty($product_ids)) {
+      $id = 1;
+      while (!in_array($id, $product_ids)) {
+        $this->assertNoOptionSelected('edit-field-product-und', $id);
+        $id++;
+      }
+    }
+  }
+
+  /**
+   * Submits the bulk creation form.
+   *
+   * This function resets the SKU fragment, so it can be used multiple times
+   * without creating duplicate SKUs.
+   *
+   * @param $button
+   *   (optional) The text of the submit button that should be triggered.
+   *   Defaults to 'Create products'.
+   */
+  function submitBulkForm($button = 'Create products') {
+    $params = $this->params;
+    $params['sku_fragment'] = $this->randomName(5);
+    $this->drupalPost($this->bulk_url, $params, $button);
+  }
+  /**
+   * Sets a settings value through the bpc_display settings page.
+   *
+   * @param $settings
+   *   Array as expected by drupalPost().
+   */
+  function setDisplaySetting($settings) {
+    $url = 'admin/commerce/config/commerce_bpc/display_nodes';
+    $this->drupalPost($url, $settings, 'Save configuration');
+  }
+}

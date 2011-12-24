@@ -1,0 +1,25 @@
+name = Product Option
+description = Let users define one or more field(s) as an optionset to a product.
+package = "Commerce Product Enhancements"
+core = 7.x
+dependencies[] = commerce
+dependencies[] = commerce_product_attributes
+
+
+files[] = commerce_option.module
+files[] = includes/commerce_option.inc
+files[] = includes/commerce_option_set.inc
+
+; Views includes
+files[] = includes/views/commerce_option.views.inc
+
+; Views handlers
+files[] = includes/views/handlers/commerce_option_handler_field_option_list.inc
+
+
+; Information added by drupal.org packaging script on 2011-12-12
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_option"
+datestamp = "1323648783"
+

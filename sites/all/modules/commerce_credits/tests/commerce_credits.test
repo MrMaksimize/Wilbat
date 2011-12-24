@@ -1,0 +1,359 @@
+<?php
+
+/**
+ * Test the CommerceCredits module.
+ */
+class CommerceCreditsTest extends DrupalWebTestCase {
+
+  public static function getInfo() {
+    return array(
+      'name' => 'Commerce credits test',
+      'description' => 'Tests the commerce credits functionality',
+      'group' => 'Commerce credits',
+    );
+  }
+
+  function setUp() {
+    parent::setUp('commerce_credits', 'commerce_product', 'commerce_product_reference', 'commerce_line_item', 'commerce_order', 'commerce_checkout');
+  }
+
+  /**
+   * Tests credit types.
+   *
+   * Currently covered functionality:
+   *  - create, save and load a credit type
+   *  - crate a commerce credits product with a specific number of credits.
+   */
+  function testCreditTypes() {
+    $credit_type_name = 'credit-type-name';
+    $this->createCreditType($credit_type_name);
+    $credit_type = commerce_credits_type_load_by_name($credit_type_name);
+    $this->assertTrue($credit_type, 'The credit type could be loaded.');
+
+    $credits_number = 5;
+    $product = $this->createProduct($credit_type, $credits_number);
+
+    $this->assertEqual($credit_type->name, $product->commerce_credits_type[LANGUAGE_NONE][0]['value'], 'The credit type has been saved in the new product');
+    $this->assertEqual($credits_number, $product->commerce_credits_number[LANGUAGE_NONE][0]['value'], 'The credit number has been saved in the new product');
+  }
+
+  /**
+   * Tests the credits functionality.
+   *
+   * Currently covered functionality:
+   *  - add, remove credits to user entity
+   *  - transfer credits to node
+   *  - test cron with expiration set
+   *  - set expiration for node
+   *  - test duration setting = -1 (unlimited)
+   */
+  function testCredits() {
+    $credit_type = $this->createCreditType('credit');
+
+    // Add and remove credits to the user entity.
+    $user = $this->drupalCreateUser();
+    $user_wrapper = entity_metadata_wrapper('user', $user);
+    commerce_credits_add_credits($user_wrapper, $credit_type->name, 5);
+    $credits = commerce_credits_credit_load_by_entity($user_wrapper);
+    $this->assertTrue(count($credits) == 1, 'One new credits entity has been created');
+
+    $credits = reset($credits);
+    $this->assertEqual($credits->entity_type, 'user', 'Correct entity type on new credits entity.');
+    $this->assertEqual($credits->entity_id, $user->uid, 'Correct entity id on new credits entity.');
+    $this->assertEqual($credits->credit_type, $credit_type->name, 'Correct credit type name on new credits entity.');
+    $this->assertEqual($credits->credits, 5, 'Correct credits number on new credits entity.');
+    $this->assertNULL($credits->expiration_date, 'Correct expiration date on new credits entity.');
+
+    commerce_credits_remove_credits($user_wrapper, $credit_type->name, 1);
+    $credits = reset(commerce_credits_credit_load_by_entity($user_wrapper));
+    $this->assertEqual($credits->credits, 4, 'Correct credits number on new credits entity after removal.');
+
+    // Transfer one credit to a node.
+    $node = $this->drupalCreateNode(array('type' => 'page'));
+    $node_wrapper = entity_metadata_wrapper('node', $node);
+    commerce_credits_credit_transfer_by_type($user_wrapper, $node_wrapper, $credit_type->name, 1);
+
+    $credits_user = commerce_credits_credit_load_by_entity($user_wrapper);
+    $this->assertTrue(count($credits_user) == 1, 'One credits entity found for the user.');
+    $credits_user = reset($credits_user);
+    $this->assertEqual($credits_user->cid, $credits->cid, 'Correctly re-used same credits entity.');
+    $this->assertEqual($credits_user->credits, 3, 'Correctly updated credits.');
+
+    $credits_node = commerce_credits_credit_load_by_entity($node_wrapper);
+    $this->assertTrue(count($credits_node) == 1, 'One credits entity found for the node.');
+    $credits_node = reset($credits_node);
+    $this->assertEqual($credits_node->credits, 1, 'Correctly transferred credit to the node.');
+
+    // Transfer all credits
+    commerce_credits_credit_transfer_by_type($user_wrapper, $node_wrapper, $credit_type->name, -1);
+    $credits_user = commerce_credits_credit_load_by_entity($user_wrapper);
+    $this->assertFalse($credits_user, 'All credits transferred.');
+
+    $credits_node = commerce_credits_credit_load_by_entity($node_wrapper);
+    $this->assertTrue(count($credits_node) == 1, 'One credits entity found for the node.');
+    $credits_node = reset($credits_node);
+    $this->assertEqual($credits_node->credits, 4, 'All credits transferred.');
+
+    // Re-add credits to user for testing purpose.
+    commerce_credits_add_credits($user_wrapper, $credit_type->name, 1);
+    $credits_user = commerce_credits_credit_load_by_entity($user_wrapper);
+    $this->assertTrue(count($credits_user) == 1, 'One credits entity found for the user.');
+    $credits_user = reset($credits_user);
+
+    // Test expiration date.
+    // First, run cron without any expiration dates set and check if all stays
+    // the same.
+    $this->cronRun();
+    $credits = entity_load('commerce_credits', array($credits_user->cid, $credits_node->cid));
+    $this->assertTrue(count($credits) == 2, 'Credits correctly are available after cron runs.');
+
+    // Now set the expiration date.
+    commerce_credits_credit_set_entity_expiration_date($node_wrapper, $credit_type->name);
+    $credits_node = reset(commerce_credits_credit_load_by_entity(entity_metadata_wrapper('node', $node), $credit_type->name, TRUE));
+    $this->assertNotNull($credits_node->expiration_date, 'Expiration date correctly set for node.');
+    $this->cronRun();
+    $credits_node = commerce_credits_credit_load_by_entity(entity_metadata_wrapper('node', $node), $credit_type->name, TRUE);
+    $this->assertFalse($credits_node, 'Credits for node correctly deleted after expiration.');
+    $credits_user = commerce_credits_credit_load_by_entity(entity_metadata_wrapper('user', $user), $credit_type->name, TRUE);
+    $this->assertTrue(count($credits_user) == 1, 'Credits for user are still available.');
+
+    // Test duration setting = -1 (unlimited)
+    $credit_type2 = $this->createCreditType('credit-type-unlimited', -1);
+    commerce_credits_add_credits($user_wrapper, $credit_type2->name, 1);
+    commerce_credits_credit_set_entity_expiration_date($user_wrapper, $credit_type2->name);
+    $credits2_user = reset(commerce_credits_credit_load_by_entity($user_wrapper, $credit_type2->name, TRUE));
+    $this->assertNULL($credits2_user->expiration_date, 'Unlimited expiration date correctly set.');
+  }
+
+  /**
+   * Tests Rules integration.
+   *
+   * Covers following Rules actions, conditions and events:
+   *  - commerce_credits_update_on_checkout
+   *  - commerce_credits_transfer
+   *  - commerce_credits_add
+   *  - commerce_credits_remove
+   *  - commerce_credits_set_credits_expiration_date
+   *  - commerce_credits_delete_chosen_credit
+   *  - commerce_credits_entity_has_credits
+   *  - commerce_credits_expire
+   */
+  function testRulesIntegration() {
+    $credit_type = $this->createCreditType('credit');
+    $credits_number = 5;
+    $product = $this->createProduct($credit_type, $credits_number);
+
+    // Purchase a product and check if credits are transferred to the account.
+    $this->configureRulesActionOnCheckout();
+    $user = $this->drupalCreateUser();
+    $order = $this->newCommerceOrder($user, $product);
+    $credits = commerce_credits_credit_load_by_entity(entity_metadata_wrapper('user', $user));
+    $this->assertTrue(count($credits) == 1, 'One new credits entity has been created on product checkout');
+
+    $credits = reset($credits);
+    $this->assertEqual($credits->entity_type, 'user', 'Correct entity type on new credits entity.');
+    $this->assertEqual($credits->entity_id, $user->uid, 'Correct entity id on new credits entity.');
+    $this->assertEqual($credits->credit_type, $credit_type->name, 'Correct credit type name on new credits entity.');
+    $this->assertEqual($credits->credits, $credits_number, 'Correct credits number on new credits entity.');
+    $this->assertNULL($credits->expiration_date, 'Correct expiration date on new credits entity.');
+
+    // Purchase the product a second time and check that the credits are accumulated.
+    $order2 = $this->newCommerceOrder($user, $product);
+    $credits_new = commerce_credits_credit_load_by_entity(entity_metadata_wrapper('user', $user));
+    $this->assertTrue(count($credits_new) == 1, 'One credits entity found for the user.');
+    $credits_new = reset($credits_new);
+    $this->assertEqual($credits_new->cid, $credits->cid, 'Correctly re-used same credits entity.');
+    $this->assertEqual($credits_new->credits, 2*$credits_number, 'Correctly updated credits.');
+
+
+    // Transfer one credit to a node.
+    $node = $this->drupalCreateNode(array('type' => 'page'));
+    $number = 1;
+    $this->executeRulesComponentTransferCredits($user, $node, $credit_type, $number);
+
+    $credits_user = commerce_credits_credit_load_by_entity(entity_metadata_wrapper('user', $user));
+    $this->assertTrue(count($credits_user) == 1, 'One credits entity found for the user.');
+    $credits_user = reset($credits_user);
+    $this->assertEqual($credits_user->cid, $credits->cid, 'Correctly re-used same credits entity.');
+    $this->assertEqual($credits_user->credits, (2*$credits_number)-$number, 'Correctly updated credits.');
+
+    $credits_node = commerce_credits_credit_load_by_entity(entity_metadata_wrapper('node', $node));
+    $this->assertTrue(count($credits_node) == 1, 'One credits entity found for the node.');
+    $credits_node = reset($credits_node);
+    $this->assertEqual($credits_node->credits, 1, 'Correctly transferred credit to the node.');
+
+    // Test adding and removing of credits.
+    $this->executeRulesComponentAddCredits($node, $credit_type, 1);
+    $credits_node = reset(commerce_credits_credit_load_by_entity(entity_metadata_wrapper('node', $node)));
+    $this->assertEqual($credits_node->credits, 2, 'Correctly added credit to the node.');
+    $this->executeRulesComponentRemoveCredits($node, $credit_type, 1);
+    $credits_node = reset(commerce_credits_credit_load_by_entity(entity_metadata_wrapper('node', $node)));
+    $this->assertEqual($credits_node->credits, 1, 'Correctly removed credit from the node.');
+
+    // Test the credit type session variable.
+    $_SESSION[COMMERCE_CREDITS_SESSION_VARIABLE] = $credit_type->name;
+    $this->executeRulesComponentTransferCreditsByChosenCreditType($user, $node, 1);
+    $credits_node = commerce_credits_credit_load_by_entity(entity_metadata_wrapper('node', $node));
+    $credits_node = reset($credits_node);
+    $this->assertEqual($credits_node->credits, 2, 'Correctly transferred credit to the node based on the chosen credit type.');
+    // Now delete the variable and check if the transfer rule can be executed
+    $this->executeRulesComponentDeleteChosenCreditType();
+    $this->executeRulesComponentTransferCreditsByChosenCreditType($user, $node, 1);
+    $credits_node = reset(commerce_credits_credit_load_by_entity(entity_metadata_wrapper('node', $node)));
+    $this->assertEqual($credits_node->credits, 2, 'Chosen credit type correctly cleared.');
+
+    // Test expiration date.
+    // First, run cron without any expiration dates set and check if all stays
+    // the same.
+    $this->configureRulesActionOnNodeExpire();
+    $this->cronRun();
+    $credits = entity_load('commerce_credits', array($credits_user->cid, $credits_node->cid));
+    $this->assertTrue(count($credits) == 2, 'Credits correctly are available after cron runs.');
+    $node = node_load($node->nid);
+    $this->assertTrue($node->status, 'Node correctly in published state after cron runs.');
+
+    // Now set the expiration date.
+    $this->executeRulesComponentExpireCredit($node, $credit_type);
+    $credits_node = reset(commerce_credits_credit_load_by_entity(entity_metadata_wrapper('node', $node), $credit_type->name, TRUE));
+    $this->assertNotNull($credits_node->expiration_date, 'Expiration date correctly set for node.');
+    $this->cronRun();
+    $credits_node = commerce_credits_credit_load_by_entity(entity_metadata_wrapper('node', $node), $credit_type->name, TRUE);
+    $this->assertFalse($credits_node, 'Credits for node correctly deleted after expiration.');
+    $credits_user = commerce_credits_credit_load_by_entity(entity_metadata_wrapper('user', $user), $credit_type->name, TRUE);
+    $this->assertTrue(count($credits_user) == 1, 'Credits for user are still available.');
+    drupal_static_reset();
+    $node = node_load($node->nid);
+    $this->assertFalse($node->status, 'Node correctly in unpublished after expiration.');
+  }
+
+  function createCreditType($credit_type_name, $duration = 0) {
+    // Add a new credit type.
+    $credit_type_values = array(
+      'label' => 'credit-type-label',
+      'name' => $credit_type_name,
+      'description' => 'credit-type-description',
+      'duration' => $duration,
+      'type' => 'credit',
+    );
+    $credit_type = entity_create('commerce_credits_type', $credit_type_values);
+    $wrapper = entity_metadata_wrapper('commerce_credits_type', $credit_type);
+    $wrapper->save();
+
+    $this->assertTrue($wrapper->cid->value(), 'Credit type has been created');
+    $this->assertEqual($credit_type->label, $credit_type_values['label'], 'The label has been correctly saved.');
+    return $credit_type;
+  }
+
+  function createProduct($credit_type, $credits) {
+    //Add a new credits product.
+    $new_product = commerce_product_new('commerce_credits');
+    $new_product->sku = $this->randomName(10);
+    $new_product->title = 'commerce-credits-product-title';
+    $new_product->uid = 1;
+    $new_product->commerce_credits_type[LANGUAGE_NONE][] = array('value' => $credit_type->name);
+    $new_product->commerce_credits_number[LANGUAGE_NONE][] = array('value' => $credits);
+
+    $return = commerce_product_save($new_product);
+    $this->assertIdentical($return, SAVED_NEW, 'Commerce credits product successfully saved.');
+
+    $loaded_product = commerce_product_load($new_product->product_id);
+    $this->assertTrue($loaded_product->product_id, 'The product could be loaded.');
+    return $loaded_product;
+  }
+
+  function newCommerceOrder($user, $product) {
+    // Create a new order.
+    $order = commerce_order_new($user->uid, 'checkout');
+    commerce_order_save($order);
+
+    // Create a new line item.
+    $line_item = commerce_product_line_item_new($product, 1, $order->order_id);
+    commerce_line_item_save($line_item);
+
+    // Add the line item to the order.
+    $order_wrapper = entity_metadata_wrapper('commerce_order', $order);
+    $order_wrapper->commerce_line_items[] = $line_item;
+
+    commerce_order_save($order);
+    commerce_checkout_complete($order);
+    return $order;
+  }
+
+  function configureRulesActionOnCheckout() {
+    $rule = rules_reaction_rule();
+    $rule->event('commerce_checkout_complete');
+    $rule->action('commerce_credits_update_on_checkout', array('commerce_order:select' => 'commerce_order'));
+    $rule->integrityCheck()->save('commerce_credits_checkout');
+  }
+
+  function configureRulesActionOnNodeExpire() {
+    $rule = rules_reaction_rule();
+    $rule->event('commerce_credits_expire');
+    $rule->condition('entity_is_of_type', array('entity:select' => 'entity', 'type' => 'node'));
+    $rule->action('node_unpublish', array('node:select' => 'entity'));
+    $rule->integrityCheck()->save('commerce_credits_expire');
+  }
+
+  function executeRulesComponentTransferCredits($user, $node, $credit_type, $number) {
+    $rule = rule();
+    $rule->condition('commerce_credits_entity_has_credits', array(
+      'entity' => entity_metadata_wrapper('user', $user),
+      'credit_type' => $credit_type->name,
+      'credit_number' => $number,
+    ));
+    $rule->action('commerce_credits_transfer', array(
+      'entity_from' => entity_metadata_wrapper('user', $user),
+      'entity_to' => entity_metadata_wrapper('node', $node),
+      'credit_type' => $credit_type->name,
+      'number' => $number,
+    ));
+    $rule->integrityCheck()->execute();
+  }
+
+  function executeRulesComponentAddCredits($node, $credit_type, $number) {
+    $rule = rule();
+    $rule->action('commerce_credits_add', array(
+      'entity' => entity_metadata_wrapper('node', $node),
+      'credit_type' => $credit_type->name,
+      'number' => $number,
+    ));
+    $rule->integrityCheck()->execute();
+  }
+
+  function executeRulesComponentRemoveCredits($node, $credit_type, $number) {
+    $rule = rule();
+    $rule->action('commerce_credits_remove', array(
+      'entity' => entity_metadata_wrapper('node', $node),
+      'credit_type' => $credit_type->name,
+      'number' => $number,
+    ));
+    $rule->integrityCheck()->execute();
+  }
+
+  function executeRulesComponentTransferCreditsByChosenCreditType($user, $node, $number) {
+    $rule = rule();
+    $rule->condition(rules_condition('data_is_empty', array('data:select' => 'site:current_commerce_credit_type'))->negate());
+    $rule->action('commerce_credits_transfer', array(
+      'entity_from' => entity_metadata_wrapper('user', $user),
+      'entity_to' => entity_metadata_wrapper('node', $node),
+      'credit_type:select' => 'site:current_commerce_credit_type',
+      'number' => $number,
+    ));
+    $rule->integrityCheck()->execute();
+  }
+
+  function executeRulesComponentDeleteChosenCreditType() {
+    $rule = rule();
+    $rule->action('commerce_credits_delete_chosen_credit');
+    $rule->integrityCheck()->execute();
+  }
+
+  function executeRulesComponentExpireCredit($node, $credit_type) {
+    $rule = rule();
+    $rule->action('commerce_credits_set_credits_expiration_date', array(
+      'entity' => entity_metadata_wrapper('node', $node),
+      'credit_type' => $credit_type->name,
+    ));
+    $rule->integrityCheck()->execute();
+  }
+}

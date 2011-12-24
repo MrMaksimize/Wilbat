@@ -1,0 +1,849 @@
+<?php
+
+/**
+ * @file
+ * Commerce Credits module
+ */
+ 
+// Defines session variable name
+define('COMMERCE_CREDITS_SESSION_VARIABLE', 'commerce_credits_type');
+
+/**
+ * Implements hook_cron()
+ */
+function commerce_credits_cron() {
+  $query = new EntityFieldQuery();
+
+  $results = $query
+    ->entityCondition('entity_type', 'commerce_credits')
+    ->propertyCondition('expiration_date', time(), '<')
+    ->execute();
+
+  if (isset($results['commerce_credits'])) {
+    $entities = entity_load('commerce_credits', array_keys($results['commerce_credits']));
+    foreach ($entities as $entity) {
+      $credit_type = commerce_credits_type_load_by_name($entity->credit_type);
+      $referenced_entity = entity_metadata_wrapper($entity->entity_type, $entity->entity_id);
+      if ($referenced_entity) {
+        rules_invoke_event('commerce_credits_expire', $referenced_entity, $entity, $credit_type);
+      }
+      commerce_credits_credit_delete($entity->cid);
+    }
+  }
+}
+
+/**
+ * Implements hook_hook_info().
+ */
+function commerce_credits_hook_info() {
+  $hooks = array(
+    'commerce_credits_group_info' => array(
+      'group' => 'commerce_credits',
+    ),
+    'commerce_credits_group_info_alter' => array(
+      'group' => 'commerce',
+    ),
+  );
+
+  return $hooks;
+}
+
+/**
+ * Implements hook_entity_info().
+ */
+function commerce_credits_entity_info() {
+  $return = array(
+    'commerce_credits_type' => array(
+      'label' => t('Commerce Credit Type'),
+      'controller class' => 'CommerceCreditsTypeEntityController',
+      'metadata controller class' => 'EntityDefaultMetadataController',
+      'base table' => 'commerce_credits_types',
+      'fieldable' => TRUE,
+      'entity keys' => array(
+        'id' => 'cid',
+        'bundle' => 'type',
+        'name' => 'name',
+        'label' => 'label',
+      ),
+      'bundle keys' => array(
+        'bundle' => 'type',
+      ),
+      'bundles' => array(),
+      'bundle of' => 'commerce_credits',
+      'view modes' => array(
+        'full' => array(
+          'label' => t('Admin display'),
+          'custom settings' => FALSE,
+        ),
+      ),
+      'exportable' => TRUE,
+      'views controller class' => 'EntityDefaultViewsController',
+      'module' => 'commerce_credits',
+      'access callback' => 'commerce_credits_type_access',
+    ),
+    'commerce_credits' => array(
+      'label' => t('Commerce Credit'),
+      'controller class' => 'CommerceCreditsEntityController',
+      'base table' => 'commerce_credits',
+      'fieldable' => FALSE,
+      'entity keys' => array(
+        'id' => 'cid',
+      ),
+      'bundle keys' => array(
+        // The credit type's name.
+        'bundle' => 'name',
+      ),
+      'views controller class' => 'EntityDefaultViewsController',
+      'metadata controller class' => 'CommerceCreditsEntityMetadataController',
+    ),
+  );
+
+  foreach (commerce_credits_group_get_name() as $type => $name) {
+    $return['commerce_credits_type']['bundles'][$type] = array(
+      'label' => $name,
+    );
+  }
+
+  return $return;
+}
+
+/**
+ * Implements hook_field_extra_fields().
+ */
+function commerce_credits_field_extra_fields() {
+  $extra = array();
+
+  foreach (commerce_credits_groups() as $group_name => $group) {
+    $extra['commerce_credits_type'][$group_name] = array(
+      'form' => array(
+        'title' => array(
+          'label' => t('Title'),
+          'description' => t('Credit module title form element'),
+          'weight' => -5,
+        ),
+        'duration' => array(
+          'label' => t('Duration'),
+          'description' => t('Duration in minutes for this credit type'),
+          'weight' => 35,
+        ),
+      ),
+      'display' => array(
+        'title' => array(
+          'label' => t('Title'),
+          'description' => t('Full credit type title'),
+          'weight' => -5,
+        ),
+      ),
+    );
+  }
+
+  return $extra;
+}
+
+/**
+ * Access callback for the entity API.
+ */
+function commerce_credits_type_access($op, $type = NULL, $account = NULL) {
+  return user_access('administer commerce credits', $account);
+}
+
+/**
+ * Implements hook_entity_property_info().
+ *
+ * Add the chosen credit type to the system token.
+ */
+function commerce_credits_entity_property_info() {
+  $info = array();
+
+  $properties = &$info['site']['properties'];
+  $properties['current_commerce_credit_type'] = array(
+    'label' => t("Currently chosen credit type"),
+    'description' => t("The currently chosen commerce credit type, if it exists."),
+    'getter callback' => 'commerce_credits_get_properties',
+    'type' => 'text',
+  );
+  return $info;
+}
+
+/**
+ * Property getter callback.
+ */
+function commerce_credits_get_properties($data = array(), array $options, $name, $type) {
+  switch ($name) {
+    case 'current_commerce_credit_type':
+      return isset($_SESSION[COMMERCE_CREDITS_SESSION_VARIABLE]) ? $_SESSION[COMMERCE_CREDITS_SESSION_VARIABLE] : '';
+  }
+}
+
+/**
+ * Resets the cached list of groups.
+ */
+function commerce_credits_groups_reset() {
+  $groups = &drupal_static('commerce_credits_groups');
+  $groups = NULL;
+}
+
+
+/**
+ * Returns an array of credit group arrays keyed by group name.
+ */
+function commerce_credits_groups() {
+  // First check the static cache for a credits group array.
+  $credit_groups = &drupal_static(__FUNCTION__);
+
+  // If it did not exist, fetch the groups now.
+  if (!isset($credit_groups)) {
+    $credit_groups = array();
+
+    // Find credit groups defined by hook_commerce_credits_group_info().
+    foreach (module_implements('commerce_credits_group_info') as $module) {
+      foreach (module_invoke($module, 'commerce_credits_group_info') as $group_name => $group) {
+        // Set the module each group is defined by if it isn't set yet.
+        $group += array('module' => $module);
+        $credit_groups[$group_name] = $group;
+      }
+    }
+
+    // Last allow the info to be altered by other modules.
+    drupal_alter('commerce_credits_group_info', $credit_groups);
+  }
+
+  return $credit_groups;
+}
+
+/**
+ * Loads a credit group.
+ *
+ * @param $group_name
+ *   The machine-readable name of the credit group; accepts normal machine names
+ *     and URL prepared machine names with underscores replaced by hyphens.
+ */
+function commerce_credits_group_load($group_name) {
+  // Return if og group load hook is accidentally invoked, see http://drupal.org/node/1354456.
+  if (is_array($group_name)) {
+    return;
+  }
+  $group_name = strtr($group_name, array('-' => '_'));
+  $groups = commerce_credits_groups();
+  return !empty($groups[$group_name]) ? $groups[$group_name] : FALSE;
+}
+
+/**
+ * Returns the human readable name of any or all credit groups.
+ *
+ * @param $group_name
+ *   Optional parameter specifying the group whose name to return.
+ *
+ * @return
+ *   Either an array of all group names keyed by the machine name or a
+ *     string containing the human readable name for the specified group. If a
+ *     group is specified that does not exist, this function returns FALSE.
+ */
+function commerce_credits_group_get_name($group_name = NULL) {
+  $groups = commerce_credits_groups();
+
+  // Return a type name if specified and it exists.
+  if (!empty($group_name)) {
+    if (isset($groups[$group_name])) {
+      return $groups[$group_name]['name'];
+    }
+    else {
+      // Return FALSE if it does not exist.
+      return FALSE;
+    }
+  }
+
+  // Otherwise turn the array values into the type name only.
+  foreach ($groups as $key => $value) {
+    $groups[$key] = $value['name'];
+  }
+
+  return $groups;
+}
+
+/**
+ * Returns an initialized credit type object.
+ *
+ * @param $group_name
+ *   The machine-readable group name of the credit type.
+ *
+ * @return
+ *   A credit type object with all default fields initialized.
+ */
+function commerce_credits_type_new($group_name = '') {
+  return entity_get_controller('commerce_credits_type')->create(array('type' => $group_name));
+}
+
+/**
+ * Load a commerce credit type by name
+ */
+function commerce_credits_type_load_by_name($name) {
+  if ($credit_type = commerce_credits_type_load_multiple(FALSE, array('name' => $name))) {
+    return reset($credit_type);
+  }
+  return FALSE;
+}
+
+/**
+ * Load a commerce credit type
+ */
+function commerce_credits_type_load($cid = NULL, $reset = FALSE) {
+  $cids = (isset ($cid) ? array($cid) : array());
+  $type = commerce_credits_type_load_multiple($cids, $reset);
+  return $type ? reset ($type) : FALSE;
+}
+
+/**
+ * Load multiple commerce credit types
+ */
+function commerce_credits_type_load_multiple($cids = array(), $conditions = array(), $reset = FALSE){
+  return entity_load('commerce_credits_type', $cids, $conditions, $reset);
+}
+
+/**
+ * Saves a new or existing credit type.
+ *
+ * @param $type
+ *   An object with name, description, and duration properties.
+ */
+function commerce_credits_type_save(&$type) {
+  return entity_get_controller('commerce_credits_type')->save($type);
+}
+
+/**
+ * Deletes a credit type by ID.
+ *
+ * @param $cid
+ *   The ID of the credit type to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function commerce_credits_type_delete($cid) {
+  return commerce_credits_type_delete_multiple(array($cid));
+}
+
+/**
+ * Deletes multiple credit types by ID.
+ *
+ * @param $cids
+ *   An array of credit type IDs to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function commerce_credits_type_delete_multiple($cids) {
+  return entity_get_controller('commerce_credits_type')->delete($cids);
+}
+
+/**
+ * Returns an initialized credit object.
+ *
+ * @param $entity
+ *   The wrapped entity associated to the credit.
+ * @param $credit_type
+ *   The credit type name
+ *
+ * @return
+ *   A credit type object with all default fields initialized.
+ */
+function commerce_credits_credit_new(EntityDrupalWrapper $entity, $credit_type) {
+  return entity_get_controller('commerce_credits')->createByEntity($entity->getIdentifier(), $entity->type(), $credit_type);
+}
+
+/**
+ * Load a commerce credit
+ */
+function commerce_credits_credit_load($cid = NULL, $reset = FALSE) {
+  $cids = (isset ($cid) ? array($cid) : array());
+  $credit = commerce_credits_credit_load_multiple($cids, $reset);
+  return $credit ? reset ($credit) : FALSE;
+}
+
+/**
+ * Load multiple commerce credits
+ */
+function commerce_credits_credit_load_multiple($cids = array(), $conditions = array(), $reset = FALSE){
+  return entity_load('commerce_credits', $cids, $conditions, $reset);
+}
+
+/**
+ * Load all the credits that belong to a specific entity and a specific type
+ *
+ * @param $entity
+ *  The wrapped entity for which the credit entities will be queried.
+ * @param $credit_type
+ *  The name of the credit type. Leave empty to load the credit entities for all
+ *  types.
+ * @param $reset
+ *  Reset static cache.
+ *
+ * @return
+ *  An array of credit entities, or FALSE if non found.
+ */
+function commerce_credits_credit_load_by_entity(EntityDrupalWrapper $entity, $credit_type = '', $reset = FALSE) {
+  return entity_get_controller('commerce_credits')->loadByEntity($entity->getIdentifier(), $entity->type(), $credit_type, $reset);
+}
+
+/**
+ * Saves a new or existing credit.
+ *
+ * @param $credit
+ *   A credit object
+ */
+function commerce_credits_credit_save(&$credit) {
+  return entity_get_controller('commerce_credits')->save($credit);
+}
+
+/**
+ * Deletes a credit by ID.
+ *
+ * @param $cid
+ *   The ID of the credit to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function commerce_credits_credit_delete($cid) {
+  return commerce_credits_credit_delete_multiple(array($cid));
+}
+
+/**
+ * Deletes multiple credits by ID.
+ *
+ * @param $cids
+ *   An array of credit IDs to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function commerce_credits_credit_delete_multiple($cids) {
+  return entity_get_controller('commerce_credits')->delete($cids);
+}
+
+/**
+ * Adds credits to an entity.
+ *
+ * @param $entity
+ *  The wrapped entity to which the credits will be added.
+ * @param $credit_type
+ *  The name of the credit type.
+ * @param $credits
+ *  The number of credits to be added.
+ */
+function commerce_credits_add_credits(EntityDrupalWrapper $entity, $credit_type, $credits) {
+  $controller = entity_get_controller('commerce_credits');
+  $credits_entity = $controller->loadByEntity($entity->getIdentifier(), $entity->type(), $credit_type);
+  if (!$credits_entity) {
+    $credits_entity = commerce_credits_credit_new($entity, $credit_type);
+  }
+  else {
+    $credits_entity = reset($credits_entity);
+  }
+  $controller->addCredits($credits_entity, $credits);
+}
+
+/**
+ * Removes credits from an entity, if possible.
+ *
+ * @param $entity
+ *  The wrapped entity from which the credits will be removed.
+ * @param $credit_type
+ *  The name of the credit type.
+ * @param $credits
+ *  The number of credits to be removed.
+ */
+function commerce_credits_remove_credits(EntityDrupalWrapper $entity, $credit_type, $credits) {
+  $controller = entity_get_controller('commerce_credits');
+  $credits_entity = $controller->loadByEntity($entity->getIdentifier(), $entity->type(), $credit_type);
+  if ($credits_entity) {
+    $credits_entity = reset($credits_entity);
+    if ($credits_entity->credits >= $credits) {
+      $controller->removeCredits($credits_entity, $credits);
+    }
+  }
+}
+
+/**
+ * Transfer all credits of a specific type belonging to a specific entity to another entity
+ * 
+ * @param $from_entity
+ *  The wrapped entity from which the credits will be taken.
+ * @param $to_entity
+ *  To wrapped entity to which the credits will be transferred.
+ * @param $credit_type
+ *  To name of the credit type
+ * @param $credits
+ *  The number of credits to transfer, use -1 to transfer all credits.
+ */
+function commerce_credits_credit_transfer_by_type(EntityDrupalWrapper $from_entity, EntityDrupalWrapper $to_entity, $credit_type, $credits = -1) {
+  $return = entity_get_controller('commerce_credits')->transferCredits($from_entity, $to_entity, $credit_type, $credits);
+  if ($return == FALSE) {
+    drupal_set_message(t('The transfer of credits could not be performed because the entity does not have enough credits to be transferred'), 'error');
+    watchdog('commerce_credits', 'Could not transfer %number credits from entity type %from_type entity id %from_id to entity type %to_type entity id %to_id', array(
+      '%number' => $credits,
+      '%from_type' => $from_entity->type(),
+      '%from_id' => $from_entity->getIdentifier(),
+      '%to_type' => $to_entity->type(),
+      '%to_id' => $to_entity->getIdentifier()
+    ), WATCHDOG_ERROR);
+  }
+}
+
+/**
+ * Set the expiration date of a specific credit based on its credit type.
+ *
+ * In case the credit type has an duration setting of '-1', no expiration date
+ * will be set.
+ * 
+ * @param $cid
+ *  Credit id
+ */
+function commerce_credits_credit_set_expiration_date($cid) {
+  $credit = commerce_credits_credit_load($cid);
+  if ($credit) {
+    $credit_type = commerce_credits_type_load_by_name($credit->credit_type);
+    if (isset($credit_type->duration) && $credit_type->duration != -1) {
+      // Get duration in seconds
+      $duration = $credit_type->duration * 60;
+      $exp_date = 0;
+      if ($duration > 0) {
+        $exp_date = time() + $duration;
+      }
+      $credit->expiration_date = $exp_date;
+      commerce_credits_credit_save($credit);
+    }
+  }
+}
+
+/**
+ * Set the expiration date of all of the credits of a specific type that belong to a specific entity
+ * 
+ * @param $entity
+ *  Wrapped entity the credits belong to
+ * @param $credit_type
+ *  Credit type name
+ */
+function commerce_credits_credit_set_entity_expiration_date(EntityDrupalWrapper $entity, $credit_type) {
+  $results = commerce_credits_credit_load_by_entity($entity, $credit_type);
+  if ($results) {
+    $cids = array_keys($results);
+    foreach ($cids as $cid) {
+      commerce_credits_credit_set_expiration_date($cid);
+    }
+  }
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function commerce_credits_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'commerce_credits') . '/includes/views',
+  );
+}
+
+/**
+ * Implements hook_permission().
+ */
+function commerce_credits_permission() {
+  $permissions = array(
+    'administer commerce credits' => array(
+      'title' => t('Administer commerce credits'),
+      'description' => t('Allows users to configure commerce credits.'),
+      'restrict access' => TRUE,
+    ),
+  );
+
+  return $permissions;
+}
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_credits_menu() {
+  $items = array();
+
+  // Credits choice page
+  $items['commerce_credits/choose/%'] = array(
+    'title' => 'You need to use credits to perform this action',
+    'page callback' => 'drupal_get_form',
+    'access callback' => 'user_is_logged_in',
+    'type' => MENU_CALLBACK,
+    'page arguments' => array('commerce_credits_choose_form', 2),
+    'file' => 'commerce_credits.pages.inc'
+  );
+
+  return $items;
+}
+
+/*
+ * access callback for user's credits balance page
+ *
+ */   
+function commerce_credits_user_menu() {
+  global $user;
+  return ($user->uid && $user->uid == arg(1));
+}
+
+/**
+ * Get a list of all credit types.
+ *
+ * @return
+ *   An array of type objects, keyed by type name. Each
+ *   type object has name, description, and duration properties.
+ */
+function commerce_credits_types() {
+  static $types;
+  if (!isset($types)) {
+    $types = entity_load('commerce_credits_type', FALSE);
+  }
+  return $types;
+}
+
+/**
+ * Returns a list of all credit types ready to be used in a select list
+ */
+function commerce_credits_types_list() {
+  $out = array();
+  foreach (commerce_credits_types() as $type) {
+    $out[$type->name] = check_plain($type->label);
+  }
+  return $out;
+}
+
+/**
+ * Get a list of all groups
+ * 
+ * @return
+ *  An array of groups ready to be used in a select list
+ */
+function commerce_credits_groups_list() {
+  $groups = commerce_credits_groups();
+  $out = array();
+  foreach ($groups as $group_name => $group) {
+    $out[$group_name] = check_plain($group['name']);
+  }
+  return $out;
+}
+
+/**
+ * Implements hook_commerce_product_type_info()
+ */
+function commerce_credits_commerce_product_type_info() {
+  $types = array();
+  $types['commerce_credits'] = array(
+    'type' => 'commerce_credits',
+    'name' => t('Commerce Credits'),
+    'description' => t('Define products based on Commerce Credits')
+  );
+  return $types;
+}
+
+/**
+ * Implements hook_enable()
+ */
+function commerce_credits_enable() {
+  field_cache_clear();
+  $field = field_info_field('commerce_credits_type');
+  $field_number = field_info_field('commerce_credits_number');
+  $instance = field_info_instance('commerce_product', 'commerce_credits_type', 'commerce_credits');
+  $instance_number = field_info_instance('commerce_product', 'commerce_credits_number', 'commerce_credits');
+
+  if (empty($field)) {
+    $field = array(
+      'field_name' => 'commerce_credits_type',
+      'type' => 'list_text',
+      'module' => 'list',
+      'cardinality' => 1,
+      'entity_types' => array('commerce_product'),
+      'translatable' => FALSE,
+      'locked' => TRUE,
+      'settings' => array(
+        'allowed_values_function' => 'commerce_credits_types_list'
+      )
+    );
+    $field = field_create_field($field);
+  }
+
+  if (empty($instance)) {
+    $instance = array(
+      'field_name' => 'commerce_credits_type',
+      'entity_type' => 'commerce_product',
+      'bundle' => 'commerce_credits',
+
+      'label' => t('Credit type'),
+      'required' => TRUE,
+      'settings' => array(),
+
+      // Because this widget is locked, we need it to use the full price widget
+      // since the currency option can't be adjusted at the moment.
+      'widget' => array(
+        'type' => 'options_select',
+        'weight' => 0
+      ),
+
+      'display' => array(),
+    );
+
+    field_create_instance($instance);
+  }
+  
+  if (empty($field_number)) {
+    $field_number = array(
+      'field_name' => 'commerce_credits_number',
+      'type' => 'number_integer',
+      'module' => 'number',
+      'cardinality' => 1,
+      'entity_types' => array('commerce_product'),
+      'translatable' => FALSE,
+      'locked' => TRUE,
+    );
+    $field_number = field_create_field($field_number);
+  }
+  
+  if (empty($instance_number)) {
+    $instance_number = array(
+    'field_name' => 'commerce_credits_number',
+    'entity_type' => 'commerce_product',
+    'bundle' => 'commerce_credits',
+
+    'label' => t('Number'),
+    'description' => t('Number of credits given by this product.'),
+    'required' => TRUE,
+    'settings' => array(),
+
+    // Because this widget is locked, we need it to use the full price widget
+    // since the currency option can't be adjusted at the moment.
+    'widget' => array(
+      'type' => 'textfield',
+      'weight' => 0
+    ),
+
+    'display' => array(),
+    );
+    field_create_instance($instance_number);
+  }
+}
+
+/**
+ * If credit_type is specified, returns the number of credits for this specific credit type
+ * Else returns an associative array with the credit type names as keys
+ */
+function commerce_credits_entity_credits(EntityDrupalWrapper $entity, $credit_type = '') {
+  $credits = array();
+  $results = commerce_credits_credit_load_by_entity($entity, $credit_type);
+  if ($results) {
+      $cids = array_keys($results);
+      foreach (commerce_credits_credit_load_multiple($cids) as $credit) {
+        $credits[$credit->credit_type] = $credit->credits;
+      }
+  }
+  if (empty($credit_type)) {
+    return $credits;
+  }
+  else if (!empty($credit_type) && isset($credits[$credit_type])) {
+    return $credits[$credit_type];
+  }
+  else {
+    return 0;
+  }
+}
+
+/**
+ * Determines whether an entity has a specific number of credits from a specific group
+ */
+function commerce_credits_entity_has_credits_of_group(EntityDrupalWrapper $entity, $credit_group, $credit_number) {
+  $credits = commerce_credits_entity_credits($entity);
+  if (empty($credits)) {
+    return FALSE;
+  }
+  else {
+    $types = commerce_credits_types();
+    $return = FALSE;
+    $total_number = 0;
+    foreach ($credits as $credit_type => $number) {
+      $type = $types[$credit_type];
+      if ($type->type == $credit_group) {
+        $total_number += $number;
+      }
+    }
+    if ($total_number >= $credit_number) {
+      $return = TRUE;
+    }
+    return $return;
+  }
+}
+
+/**
+ * Returns credits expiration date
+ * If credit group is specified, returns earliest expiration date of the specified credit group
+ * Otherwise, returns earliest expiration date
+ */
+function commerce_credits_entity_expiration_date(EntityDrupalWrapper $entity, $credit_group = '') {
+  $return = array();
+  $result = commerce_credits_credit_load_by_entity($entity);
+  
+  if ($result && $credit_group == '') {
+    $cids = array_keys($result);
+    $credits = commerce_credits_credit_load_multiple($cids);
+    $exp_date = -1;
+    foreach ($credits as $credit) {
+      if ($exp_date != -1 && $credit->expiration_date < $exp_date) {
+        $exp_date = $credit->expiration_date;
+      }
+      elseif ($exp_date == -1) {
+        $exp_date = $credit->expiration_date;
+      }
+    }
+    return $exp_date;
+  }
+  elseif ($result && $credit_group != '') {
+    $types = commerce_credits_types();
+    $type_names = array();
+    foreach ($types as $type) {
+      if ($type->type == $credit_group) {
+        $type_names[] = $type->name;
+      }
+    }
+    $cids = array_keys($result);
+    $credits = commerce_credits_credit_load_multiple($cids);
+    $exp_date = -1;
+    foreach ($credits as $credit) {
+      if (in_array($credit->credit_type, $type_names)) {
+        if ($exp_date != -1 && $credit->expiration_date < $exp_date) {
+          $exp_date = $credit->expiration_date;
+        }
+        elseif ($exp_date == -1) {
+          $exp_date = $credit->expiration_date;
+        }
+      }
+    }
+    return $exp_date;
+  }
+  else {
+    return -1;
+  }
+}
+
+
+/**
+ * Implements hook_entity_view()
+ * 
+ * Provides the expiration date of an entity
+ */
+function commerce_credits_entity_view($entity, $type, $view_mode, $langcode) {
+  $wrapper = entity_metadata_wrapper($type, $entity);
+  if (commerce_credits_entity_credits($wrapper) != 0) {
+    $date = commerce_credits_entity_expiration_date($wrapper);
+    if ($date != NULL && $date != -1) {
+      $output = t('Next credit expiration: !date', array('!date' => format_date($date)));
+      $entity->content['commerce_credits_expiration_date'] = array(
+        '#markup' => $output,
+        '#access' => user_access('administer commerce credits'),
+        '#weight' => 100,
+      );
+    }
+  }
+}

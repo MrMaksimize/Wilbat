@@ -1,0 +1,337 @@
+<?php
+
+/**
+ * @file
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_credits_ui_menu() {
+  $items = array();
+
+  // Note: admin/commerce/credits/types is defined by a default View.
+
+  $items['admin/commerce/credits/groups'] = array(
+    'title' => 'Credit groups',
+    'description' => 'Manage credit groups for your store.',
+    'page callback' => 'commerce_credits_ui_groups_overview',
+    'access arguments' => array('administer commerce credits'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 0,
+    'file' => 'includes/commerce_credits_ui.groups.inc',
+  );
+  $items['admin/commerce/credits/groups/add'] = array(
+    'title' => 'Add credit group',
+    'page callback' => 'commerce_credits_ui_group_form_wrapper',
+    'page arguments' => array(commerce_credits_ui_group_new()),
+    'access arguments' => array('administer commerce credits'),
+    'type' => MENU_LOCAL_ACTION,
+    'file' => 'includes/commerce_credits_ui.groups.inc',
+  );
+  foreach (commerce_credits_groups() as $group_name => $group) {
+    // Convert underscores to hyphens for the menu item argument.
+    $group_arg = strtr($group_name, '_', '-');
+
+    $items['admin/commerce/credits/groups/' . $group_arg] = array(
+      'title' => $group['name'],
+      'page callback' => 'commerce_credits_ui_group_form_wrapper',
+      'page arguments' => array($group_name),
+      'access arguments' => array('administer commerce credits'),
+      'file' => 'includes/commerce_credits_ui.groups.inc',
+    );
+
+    if ($group['module'] == 'commerce_credits_ui') {
+      $items['admin/commerce/credits/groups/' . $group_arg . '/edit'] = array(
+        'title' => 'Edit',
+        'access callback' => 'commerce_credits_ui_group_update_access',
+        'access arguments' => array($group_name),
+        'type' => MENU_DEFAULT_LOCAL_TASK,
+        'context' => MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE,
+      );
+      $items['admin/commerce/credits/groups/' . $group_arg . '/delete'] = array(
+        'title' => 'Delete',
+        'page callback' => 'commerce_credits_ui_group_delete_form_wrapper',
+        'page arguments' => array($group),
+        'access callback' => 'commerce_credits_ui_group_update_access',
+        'access arguments' => array($group_name),
+        'type' => MENU_LOCAL_TASK,
+        'context' => MENU_CONTEXT_INLINE,
+        'weight' => 10,
+        'file' => 'includes/commerce_credits_ui.groups.inc',
+      );
+    }
+  }
+
+  return $items;
+}
+
+/**
+ * Implements hook_menu_alter().
+ */
+function commerce_credits_ui_menu_alter(&$items) {
+  // Transform the field UI tabs into contextual links.
+  foreach (commerce_credits_groups() as $group_name => $group) {
+    // Convert underscores to hyphens for the menu item argument.
+    $type_arg = strtr($group_name, '_', '-');
+
+    $items['admin/commerce/credits/groups/' . $type_arg . '/fields']['context'] = MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE;
+    $items['admin/commerce/credits/groups/' . $type_arg . '/display']['context'] = MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE;
+  }
+}
+
+
+/**
+ * Implements hook_views_api().
+ */
+function commerce_credits_ui_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'commerce_credits_ui') . '/includes/views',
+  );
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function commerce_credits_ui_entity_info_alter(&$entity_info) {
+  // Add a URI callback to the product entity.
+  //$entity_info['commerce_product']['uri callback'] = 'commerce_product_ui_product_uri';
+
+  // Add callbacks and urls for administer translations.
+  /*$entity_info['commerce_product']['translation']['entity_translation'] = array(
+    'base path' => 'admin/commerce/products/%commerce_product',
+    'access callback' => 'commerce_product_entity_translation_tab_access',
+    'access arguments' => array(3),
+    'edit form' => TRUE,
+  );*/
+
+  // Expose the admin UI for product fields.
+  foreach ($entity_info['commerce_credits_type']['bundles'] as $group_name => &$bundle) {
+    $bundle['admin'] = array(
+      'path' => 'admin/commerce/credits/groups/' . strtr($group_name, '_', '-'),
+      'access arguments' => array('administer commerce credits'),
+    );
+  }
+
+  // Enable the entity API's admin UI.
+  $entity_info['commerce_credits_type']['admin ui'] = array(
+    'path' => 'admin/commerce/credits/types',
+    'file' => 'includes/commerce_credits_ui.admin.inc',
+    'controller class' => 'CommerceCreditsTypeUIController',
+  );
+}
+
+/**
+ * Returns an initialized group array.
+ */
+function commerce_credits_ui_group_new() {
+  return array(
+    'type' => '',
+    'name' => '',
+    'description' => '',
+  );
+}
+
+/**
+ * Saves a credit group.
+ *
+ * This function will either insert a new group if $group['is_new']
+ * is set or attempt to update an existing group if it is not. It does
+ * not currently support changing the machine-readable name of the group,
+ * nor is this possible through the form supplied by the Commerce Credits UI module.
+ *
+ * @param $group
+ *   The group array containing the basic properties as initialized in
+ *     commerce_credits_ui_group_new().
+ * @param $configure
+ *   Boolean indicating whether or not credit groupconfiguration should be
+ *     performed in the event of a new group being saved.
+ * @param $skip_reset
+ *   Boolean indicating whether or not this save should result in groups
+ *     being reset and the menu being rebuilt; defaults to FALSE. This is useful
+ *     when you intend to perform many saves at once, as menu rebuilding is very
+ *     costly in terms of performance.
+ *
+ * @return
+ *   The return value of the call to drupal_write_record() to save the group,
+ *     either FALSE on failure or SAVED_NEW or SAVED_UPDATED indicating
+ *     the type of query performed to save the credit group.
+ */
+function commerce_credits_ui_group_save($group, $configure = TRUE, $skip_reset = FALSE) {
+  $op = drupal_write_record('commerce_credits_groups', $group, empty($group['is_new']) ? 'type' : array());
+
+  // If this is a new product type and the insert did not fail...
+  if (!empty($group['is_new']) && $op !== FALSE) {
+    // Notify the field API that a new bundle has been created.
+    field_attach_create_bundle('commerce_credits_type', $group['type']);
+
+    // Add the default price field to the product type.
+    /*if ($configure) {
+      commerce_product_configure_product_type($product_type['type']);
+    }*/
+  }
+
+  // Rebuild the menu to get add this group add menu item.
+  if (!$skip_reset) {
+    commerce_credits_groups_reset();
+    menu_rebuild();
+  }
+
+  return $op;
+}
+
+/**
+ * Deletes a credit group.
+ *
+ * @param $group_name
+ *   The machine-readable name of the credit group.
+ * @param $skip_reset
+ *   Boolean indicating whether or not this delete should result in credit
+ *     groups being reset and the menu being rebuilt; defaults to FALSE. This is
+ *     useful when you intend to perform many saves at once, as menu rebuilding
+ *     is very costly in terms of performance.
+ */
+function commerce_credits_ui_group_delete($group_name, $skip_reset = FALSE) {
+  $group = commerce_credits_group_load($group_name);
+
+  db_delete('commerce_credits_groups')
+    ->condition('type', $group_name)
+    ->execute();
+
+  // Rebuild the menu to get rid of this type's credit group add menu item.
+  if (!$skip_reset) {
+    commerce_credits_groups_reset();
+    menu_rebuild();
+  }
+
+  // Notify the field API that this bundle has been destroyed.
+  field_attach_delete_bundle('commerce_credits_type', $group_name);
+}
+
+/**
+ * Implements hook_commerce_credits_group_info().
+ */
+function commerce_credits_ui_commerce_credits_group_info() {
+  return db_query('SELECT * FROM {commerce_credits_groups}')->fetchAllAssoc('type', PDO::FETCH_ASSOC);
+}
+
+/**
+ * Implements hook_theme().
+ */
+function commerce_credits_ui_theme() {
+  return array(
+    'credit_group_admin_overview' => array(
+      'variables' => array('group' => NULL),
+      'file' => 'includes/commerce_credits_ui.groups.inc',
+    ),
+    'commerce_credits_expire_block' => array(
+      'variables' => array('entity' => NULL, 'expires' => NULL),
+    ),
+  );
+}
+
+/**
+ * Checks to see if a given credit group already exists.
+ *
+ * @param $group_name
+ *   The string to match against existing groups.
+ *
+ * @return
+ *   TRUE or FALSE indicating whether or not the credit group exists.
+ */
+function commerce_credits_ui_validate_group_unique($group_name) {
+  // Look for a match of the group name.
+  if ($match_id = db_query('SELECT type FROM {commerce_credits_groups} WHERE type = :type', array(':type' => $group_name))->fetchField()) {
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+/**
+ * Access callback: determines if the user can edit or delete a credit group.
+ *
+ * @param $group_name
+ *   The machine-name of the group to be edited or deleted.
+ */
+function commerce_credits_ui_group_update_access($group_name) {
+  $group = commerce_credits_group_load($group_name);
+
+  if ($group['module'] == 'commerce_credits_ui') {
+    return user_access('administer commerce credits');
+  }
+
+  return FALSE;
+}
+
+/**
+ * Implements hook_block_info()
+ */
+function commerce_credits_ui_block_info() {
+  $blocks['commerce_credits_expire'] = array(
+    'info' => t('Commerce credits expiration'),
+    'cache' => DRUPAL_NO_CACHE
+  );
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view()
+ */
+function commerce_credits_ui_block_view($delta = '') {
+  $block = array();
+  // TODO: find a way to fix this so it works with any entity
+  $node = menu_get_object('node');
+  
+  if (isset($node)) {
+    $wrapper = entity_metadata_wrapper('node', $node);
+    if (commerce_credits_entity_credits($wrapper) != 0) {
+      $expires = commerce_credits_entity_expiration_date($wrapper);
+      switch ($delta) {
+        case 'commerce_credits_expire':
+          $block['content'] = array(
+            '#theme' => 'commerce_credits_expire_block',
+            '#entity' => $node,
+            '#expires' => $expires,
+          );
+          break;
+      }
+    }
+  }
+  
+  return $block;
+}
+
+/**
+ * Theme the commerce credits expiration block
+ */
+function theme_commerce_credits_expire_block($variables) {
+  $node = $variables['entity'];
+  $expires = $variables['expires'];
+  $interval = $expires - time();
+  if ($interval > 0) {
+    $nb_days = $interval / 86400;
+    $nb_days = floor($nb_days);
+    return t('Expires in %number_days days', array('%number_days' => $nb_days));
+  }
+  else {
+    return t('Expired');
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+/*function commerce_credits_ui_form_commerce_credits_ui_type_delete_form_alter(&$form, &$form_state) {
+  $form['actions']['cancel']['#href'] = 'admin/commerce/credits/types';
+  $form['#submit'][] = 'commerce_credits_ui_type_delete_form_submit';
+}*/
+
+/**
+ * Submit callback for commerce_credits_ui_type_delete_form().
+ *
+ */
+/*function commerce_credits_ui_type_delete_form_submit($form, &$form_state) {
+  $form_state['redirect'] = 'admin/commerce/credits/types';
+}*/

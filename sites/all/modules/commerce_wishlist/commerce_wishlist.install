@@ -1,0 +1,75 @@
+<?php
+
+/**
+ * Implements hook_schema().
+ */
+function commerce_wishlist_schema() {
+  $schema = array();
+
+  $schema['commerce_wishlist'] = array(
+    'description' => 'The base table for commerce wishlist.',
+    'fields' => array(
+      'wishlist_id' => array(
+        'description' => 'The primary identifier for a wishlist.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'uid' => array(
+        'description' => 'User identifier.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'nid' => array(
+        'description' => 'Node identifier.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => FALSE,
+      ),
+      'product_id' => array(
+        'description' => 'Identifier for a product.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'quantity' => array(
+        'type' => 'numeric',
+        'size' => 'normal',
+        'not null' => TRUE,
+        'default' => 0,
+        'precision' => 10,
+        'scale' => 2,
+      ),
+    ),
+    'primary key' => array('wishlist_id'),
+    'unique keys' => array('unique' => array('uid', 'nid', 'product_id')),
+    'foreign keys' => array(
+      'owner' => array(
+        'table' => 'users',
+        'columns' => array('uid' => 'uid'),
+      ),
+      'product_display' => array(
+        'table' => 'node',
+        'columns' => array('nid' => 'nid'),
+      ),
+      'product' => array(
+        'table' => 'commerce_product',
+        'columns' => array('product_id' => 'product_id'),
+      ),
+    ),
+  );
+
+  return $schema;
+}
+
+/**
+ * 
+ */
+function commerce_wishlist_update_7001(&$sandbox) {
+  // Change NID Collumn
+  db_change_field('commerce_wishlist', 'nid', 'nid', array('type' => 'int', 'not null' => FALSE));
+
+  // New collumn qty
+  db_add_field('commerce_wishlist', 'quantity', array('type' => 'numeric', 'size' => 'normal', 'not null' => TRUE, 'default' => 0, 'precision' => 10, 'scale' => 2));
+}

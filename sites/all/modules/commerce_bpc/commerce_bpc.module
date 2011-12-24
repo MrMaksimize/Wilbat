@@ -1,0 +1,502 @@
+<?php
+
+/**
+ * @file
+ * This module will use a form input page to allow users to create related
+ * products quickly and easily.
+ * It will also create new functions that can be used by other modules for
+ * bulk product creation.
+ */
+
+module_load_include('inc', 'commerce_bpc', 'commerce_bpc.hooks_list');
+module_load_include('inc', 'commerce_bpc', 'commerce_bpc.tokens');
+module_load_include('inc', 'commerce_bpc', 'commerce_bpc.settings');
+
+/**
+ * Implements hook_help().
+ */
+function commerce_bpc_help($path, $arg) {
+  switch ($path) {
+    case 'admin/help#commerce_bpc':
+      return t('This module helps you create groups of related products quickly and easily.
+        To use it, you must have at least one Product Type that has one or more fields attached to it.
+        If you wish to attach the products all at once to a Display Node as part of the Bulk Creation process,
+        you must first have created a Display Node Type that has a commerce_product_reference field which can accept multiple products.');
+  }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_bpc_menu() {
+  // Add a product.
+  $items['admin/commerce/products/add-bulk'] = array(
+    'title' => 'Bulk add products',
+    'description' => 'Add a new group of products for sale in bulk.',
+    'page callback' => 'commerce_bpc_add_page',
+    'access callback' => 'commerce_bpc_product_add_any_access',
+    'file' => 'commerce_bpc.pages.inc',
+  );
+
+  $items['admin/commerce/config/commerce_bpc'] = array(
+    'title' => 'Bulk product creation',
+    'description' => 'Settings for the bulk product creation functionality',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('commerce_bpc_pattern_settings_form'),
+    'access arguments' => array('configure commerce bpc'),
+    'file' => 'commerce_bpc.admin.inc',
+    'weight' => 1,
+  );
+  $items['admin/commerce/config/commerce_bpc/patterns'] = array(
+    'title' => 'Patterns',
+    'access arguments' => array('configure commerce bpc'),
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => 0,
+  );
+  foreach (commerce_product_types() as $type => $product_type) {
+    if (commerce_bpc_valid_product_type($type)) {
+      $items['admin/commerce/products/add-bulk/' . $type] = array(
+        'title' => 'Bulk add @name',
+        'title arguments' => array('@name' => $product_type['name']),
+        'description' => $product_type['description'],
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('commerce_bpc_create_bulk_form', $type),
+        'file' => 'commerce_bpc.forms.inc',
+        'access callback' => 'commerce_product_access',
+        'access arguments' => array('create', commerce_product_new($type)),
+      );
+      $items['admin/commerce/products/types/' . $type . '/commerce_bpc'] = array(
+        'title' => 'Bulk product creation',
+        'description' => 'Settings for the bulk product creation functionality',
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('commerce_bpc_pattern_settings_form', $type),
+        'access arguments' => array('configure commerce bpc'),
+        'file' => 'commerce_bpc.admin.inc',
+        'weight' => 10,
+        'type' => MENU_LOCAL_TASK,
+      );
+      $items['admin/commerce/products/types/' . $type . '/commerce_bpc/patterns'] = array(
+        'title' => 'Patterns',
+        'access arguments' => array('configure commerce bpc'),
+        'type' => MENU_DEFAULT_LOCAL_TASK,
+        'weight' => 0,
+      );
+    }
+  }
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function commerce_bpc_permission() {
+  return array(
+    'configure commerce bpc' => array(
+      'title' => t('Configure Commerce bulk product creation'),
+      'description' => t('Allows users to update settings pertaining to Product bulk creation.'),
+      'restrict access' => TRUE,
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu_local_tasks_alter().
+ */
+function commerce_bpc_menu_local_tasks_alter(&$data, $router_item, $root_path) {
+  // Add action link 'admin/commerce/products/add-bulk' on
+  // 'admin/commerce/products'.
+  if ($root_path == 'admin/commerce/products') {
+    $item = menu_get_item('admin/commerce/products/add-bulk');
+    if ($item['access']) {
+      $data['actions']['output'][] = array(
+        '#theme' => 'menu_local_action',
+        '#link' => $item,
+      );
+    }
+  }
+}
+
+/**
+ * Implements hook_field_create_instance().
+ *
+ * Rebuilds the menu so that new menu items are created under
+ * /admin/commerce/add-bulk if the product type is now
+ * available for bulk creation.
+ */
+function commerce_bpc_field_create_instance($instance) {
+  if ($instance['entity_type'] == 'commerce_product'
+  // Only rebuild the menu if the product type is saved
+  // already---for else, the menu gets screwed up.
+    && array_key_exists($instance['bundle'], commerce_product_types())) {
+    menu_rebuild();
+  }
+}
+
+/**
+ * Implements hook_field_update_instance().
+ *
+ * Rebuilds the menu so that new menu items are created under
+ * /admin/commerce/add-bulk if the product type is now
+ * available for bulk creation.
+ */
+function commerce_bpc_field_update_instance($instance) {
+  if ($instance['entity_type'] == 'commerce_product') {
+    menu_rebuild();
+  }
+}
+
+/**
+ * Implements hook_field_delete_instance().
+ *
+ * Rebuilds the  menu so that the menu item under /admin/commerce/add-bulk is
+ * removed if the product type is no longer available for bulk creation.
+ */
+function commerce_bpc_field_delete_instance($instance) {
+  if ($instance['entity_type'] == 'commerce_product') {
+    menu_rebuild();
+  }
+}
+
+
+// ======================================
+// API Functions
+// ======================================
+
+/**
+ * API function to create bulk products based on the given parameters
+ *
+ * @param $product_type
+ *   The name of the product type for which products should be created.
+ * @param $combinations
+ *   An array of arrays, each corresponding to one combination of values
+ *   for which a product should be created. Each such array should have
+ *   field names as keys and field value-arrays as values. Example for
+ *   a non-translatable field with one value (for the current "combination"):
+ *   'field_list1' => array(LANGUAGE_NONE => array(0 => array('value' => 'foo')))
+ *    This is the format returned by field_ui's forms and by the field api
+ *    in general.
+ * @param $static_values
+ *   A single array of the same format as the combination-arrays above,
+ *   representing the fields that should have identical values across all
+ *   combinations.
+ * @param $extras
+ *   An array for the values of  'extra fields' defined for the product type
+ *   entity, or patterns for these. Recognized keys are:
+ *   - sku_pattern
+ *   - title_pattern
+ *   - status
+ *   - uid
+ *   Note that the values do NOT come in the form of complex arrays (as they
+ *   are not translatable, and can only have single values) like the
+ *   previous two parameters.hjj
+ * @return
+ *   An array of the IDs of new products that were created.
+ */
+function commerce_bpc_create_bulk_products($product_type, $combinations = array(), $static_values = array(), $extras = array()) {
+  $extras += array('uid' => 1);
+  $bulk_products = array();
+
+  // For each combination, create a product
+  foreach ($combinations as $combination) {
+    $bulk_products[] = commerce_bpc_create_product($product_type, $combination, $static_values, $extras);
+  }
+  return $bulk_products;
+}
+
+/**
+ * API function to a bulk product based on the given parameters
+ *
+ * @param $product_type
+ *   The name of the product type for which products should be created.
+ * @param $combination
+ *   An corresponding to one combination of values
+ *   for which a product should be created. This array should have
+ *   field names as keys and field value-arrays as values. Example for
+ *   a non-translatable field with one value (for the current "combination"):
+ *   'field_list1' => array(LANGUAGE_NONE => array(0 => array('value' => 'foo')))
+ *    This is the format returned by field_ui's forms and used by the field api
+ *    in general.
+ * @param $static_values
+ *   An array of the same format as the combination-array above,
+ *   representing the fields that should have identical values across all
+ *   combinations.
+ * @param $extras
+ *   An array for the values of  'extra fields' defined for the product type
+ *   entity, or patterns for these. Recognized keys are:
+ *   - sku_pattern
+ *   - title_pattern
+ *   - status
+ *   - uid
+ *   Note that the values do NOT come in the form of complex arrays (as they
+ *   are not translatable, and can only have single values) like the
+ *   previous two parameters.hjj
+ * @return
+ *   The ID of the created product.
+ */
+function commerce_bpc_create_product($product_type, $combination, $static_values, $extras) {
+  $form_state = array();
+  $form_state['values'] = $static_values;
+  $form = array();
+  $form['#parents'] = array();
+
+  // Generate a new product object
+  $new_product = commerce_product_new($product_type);
+
+  $new_product->status = $extras['status'];
+  $new_product->uid = $extras['uid'];
+
+  // Replace the tokens for the SKU and Title
+  $data = array();
+  $data['bulk_data'] = array(
+    'combination' => $combination,
+    'static_values' => $static_values,
+    'product_type' => $product_type,
+  );
+  $new_product->sku = token_replace($extras['sku_pattern'], $data, array('sanitize' => FALSE));
+  $new_product->title = token_replace($extras['title_pattern'], $data, array('sanitize' => FALSE));
+
+  // Set the proper values in the form_state for this product's combination of fields
+  foreach ($combination as $field => $value) {
+    $form_state['values'][$field] = $value;
+  }
+  // Notify field widgets to save their field data
+  field_attach_submit('commerce_product', $new_product, $form, $form_state);
+
+  commerce_product_save($new_product);
+  return $new_product->product_id;
+}
+
+/**
+ * Build combinations from a submitted form.
+ *
+ * @param $form
+ *   The form structure of the bulk creation form, after it has been
+ *   altered by the bulk creation hooks.
+ * @param $form_state
+ *   The form state after form submission. Modules that have altered
+ *   the form through the bulk creation hooks will have recorded what
+ *   they did in $form_state['commerce_bpc'][MODULE_NAME].
+ */
+function commerce_bpc_get_combinations($form, &$form_state) {
+  // We need the cartesian product of the arrays in $options.
+  // In order to do that, we loop through these arrays, at every
+  // stage taking the cartesian product of the actual array with
+  // what is there already. So after the first iteration,
+  // $combinations will just be the first member of $options.
+  // After the second, it will be the product of this with the
+  // second member, after the third, we will have the product
+  // of the previous product with the third member, and so on.
+
+  // Initialize with an empty array as sole member, so that the first
+  // iteration has something to work with
+  $combinations = array(array());
+  $hook = 'commerce_bpc_get_combinations';
+  foreach (module_implements($hook) as $module) {
+    $function = $module . '_' . $hook;
+    $function($form, $form_state, $combinations);
+  }
+  return $combinations;
+}
+
+/**
+ * Check if a product_type is a valid candidate for bulk creation.
+ *
+ * @param $type
+ *   The machine name of the type for which to check.
+ *
+ * @return
+ *   Boolean indicating whether $type can be used in bulk creation.
+ */
+function commerce_bpc_valid_product_type($type) {
+
+  $instances = field_info_instances('commerce_product', $type);
+
+  foreach ($instances as $field_name => $instance) {
+    if (commerce_bpc_is_combination_field($instance)) {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+
+/**
+ * Access callback: Determines if there is any bulk-able product type that
+ * the user is allowed to create.
+ */
+function commerce_bpc_product_add_any_access() {
+  // Grant automatic access to users with administer products permission.
+  if (user_access('administer commerce_product entities')) {
+    return TRUE;
+  }
+
+  // Check the user's access on a product type basis.
+  foreach (commerce_product_types() as $type =>  $product_type) {
+    if (commerce_product_access('create', commerce_product_new($type)) && commerce_bpc_valid_product_type($type)) {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function commerce_bpc_form_field_ui_field_edit_form_alter(&$form, $form_state) {
+  $settings = $form['#instance'];
+  if ($form['#instance']['entity_type'] == 'commerce_product') {
+    $form['instance']['commerce_bpc'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Bulk product creation'),
+      '#collapsible' => TRUE,
+      '#collapsed' => FALSE,
+    );
+    $form['instance']['commerce_bpc']['show_field'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Show this field on the bulk product creation form'),
+      '#default_value' => !isset($settings['commerce_bpc']['show_field']) ? TRUE : $settings['commerce_bpc']['show_field'],
+    );
+    if ($form['#field']['module'] == 'list') {
+      $form['instance']['commerce_bpc']['is_static'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Treat this field as static'),
+        '#default_value' => !isset($settings['commerce_bpc']['is_static']) ? FALSE : $settings['commerce_bpc']['is_static'],
+        '#description' => t('List fields can either be used to create combinations, or can be set to be static, in which case all bulk-created products will share the same value for the field.'),
+      );
+    }
+  }
+}
+
+/**
+ * Retrieve nested value in and array, providing a default.
+ *
+ * This helper function allows to retrieve a nested value (of varying
+ * depth) from an array, providing a default in case the path does not
+ * exists.
+ *
+ * @param $array
+ *  the array from which to retrieve the value.
+ * @parram $path
+ *  array of keys leading to the value to be retrieved. For example, to
+ *  retrieve $array['settings']['storage'], $path should be
+ *  array('settings', 'storage).
+ * @default
+ *   the value to return if the given path does not exist in $array.
+ *
+ * @return
+ *   The value of the array at $path, or $default if this path does not
+ *   exist.
+ */
+function _commerce_bpc_get_value($array, $path = array(), $default) {
+  $return = drupal_array_get_nested_value($array, $path, $key_exists);
+  if (!$key_exists) {
+    $return = $default;
+  }
+  return $return;
+}
+
+function _commerce_bpc_show_tokens($type, $avail_tokens = array()) {
+  $rows = array();
+
+  foreach ($avail_tokens as $token_name => $info) {
+    $rows[] = array('[' . $type . ':' . $token_name . ']', $info['name'], $info['description']);
+
+  }
+  $tokens = array(
+    '#type' => 'fieldset',
+    '#title' => t('Tokens'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  );
+  $tokens_table = array(
+    'header' => array(t('Token'), t('Label'), t('Desription')),
+    'rows' => $rows,
+    'attributes' => array(),
+    'caption' => t('Available Tokens'),
+    'colgroups' => array(),
+    'sticky' => FALSE,
+    'empty' => '',
+    );
+
+  $tokens['available_tokens'] = array(
+    '#type' => 'item',
+    '#title' => t('You may use the following tokens:'),
+    '#markup' => theme_table($tokens_table),
+  );
+  return $tokens;
+}
+
+/**
+  * Determine whether a field instance is suitable for combination-generation.
+  *
+  * @param $instance
+  *  The instance array describing the instance.
+  *
+  * @return
+  *  TRUE if the instance can be used to generate combinations, FALSE
+  *  otherwise.
+  *
+  * @see hook_commerce_bpc_is_combination_field()
+  */
+function commerce_bpc_is_combination_field($instance) {
+  return in_array(TRUE, module_invoke_all('commerce_bpc_is_combination_field', $instance));
+}
+
+/**
+ * Retrieves the next destination from the request parameters.
+ *
+ * @return
+ *   A path or an array suitable to server as a value for
+ *   $form_state['redirect'] or as arguments to url(). The array will
+ */
+function commerce_bpc_next_destination() {
+  $destinations = !empty($_REQUEST['destinations']) ? $_REQUEST['destinations'] : array();
+
+  if (!empty($destinations)) {
+    unset($_REQUEST['destinations']);
+    $destination = array_shift($destinations);
+    if (!is_array($destination)) {
+      $destination = array($destination, array());
+    }
+    if (!empty($destinations)) {
+      $destination[1]['query']['destinations'] = $destinations;
+    }
+    return $destination;
+  }
+  else {
+    return  'admin/commerce/products';
+  }
+}
+
+/**
+ * Implements hook_commerce_bpc_MODULE_NAME_form_element_alter().
+ *
+ * Moves the price field from the static values fieldset to the
+ * product fieldset.
+ */
+function commerce_bpc_commerce_bpc_commerce_price_form_element_alter(&$form, &$form_state, &$path) {
+  $field_widget = drupal_array_get_nested_value($form, $path);
+  $lang = $field_widget['#language'];
+  $field_name = $field_widget[$lang]['#field_name'];
+  $form['product'][$field_name] = drupal_array_get_nested_value($form, $path);
+  drupal_array_set_nested_value($form, $path, NULL);
+  $path = array('product', array('product', $field_name));
+//  $form['product']['commerce_price']['#weight'] = 20;
+  // record what we have done
+  if (!isset($form_state['commerce_bpc']['commerce_price']) || !in_array($field_name, $form_state['commerce_bpc']['commerce_price']['moved_fields']))
+  $form_state['commerce_bpc']['commerce_price']['moved_fields'][] = $field_name;
+}
+
+/**
+ * Implements hook_commerce_bpc_submit_alter().
+ */
+function commerce_bpc_commerce_bpc_submit_alter(&$form, &$form_state) {
+  if (isset($form_state['commerce_bpc']['commerce_price']['moved_fields'])) {
+    foreach ($form_state['commerce_bpc']['commerce_price']['moved_fields'] as $field_name) {
+      $form_state['values']['static_values'][$field_name] = $form_state['values'][$field_name];
+      unset($form_state['values'][$field_name]);
+    }
+  }
+}

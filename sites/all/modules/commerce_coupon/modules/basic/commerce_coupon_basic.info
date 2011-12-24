@@ -1,0 +1,17 @@
+name = Basic Coupon
+description = "A basic coupon type with some rules and restrictions."
+dependencies[] = commerce_coupon
+package = Commerce Coupon
+core = 7.x
+
+configure = admin/commerce/coupons/add/basic-coupon
+
+files[] = commerce_coupon_basic.module
+
+
+; Information added by drupal.org packaging script on 2011-10-28
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_coupon"
+datestamp = "1319760279"
+

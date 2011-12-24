@@ -1,0 +1,413 @@
+<?php
+
+/**
+ * @file
+ * Install Commerce Credits module
+ */
+
+/**
+ * Implements hook_schema()
+ */
+function commerce_credits_schema() {
+  $schema['commerce_credits_types'] = array(
+    'description' => 'Defines all possible credit types',
+    'fields' => array(
+      'cid' => array(
+        'description' => 'The primary identifier for a credit type, used internally only.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'type' => array(
+        'description' => 'The group of this credit type.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'label' => array(
+        'description' => 'The human-readable name of this entity.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'name' => array(
+        'description' => 'The machine-readable name of this entity.',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => FALSE,
+      ),
+      'description' => array(
+        'description' => 'A description of the credit type.',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => FALSE,
+      ),
+      'duration' => array(
+        'description' => 'Duration in minutes before credits of this type expire.',
+        'type' => 'int',
+        'default' => 0,
+      ),
+      'status' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        // Set the default to ENTITY_CUSTOM without using the constant as it is
+        // not safe to use it at this point.
+        'default' => 0x01,
+        'size' => 'tiny',
+        'description' => 'The exportable status of the entity.',
+      ),
+      'module' => array(
+        'description' => 'The name of the providing module if the entity has been defined in code.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => FALSE,
+      ),
+    ),
+    'primary key' => array('cid'),
+  );
+  // Commerce credits entities
+  $schema['commerce_credits'] = array(
+    'fields' => array(
+      'cid' => array(
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'description' => 'Primary Key: Unique credit ID.',
+      ),
+      'entity_type' => array(
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+        'default' => ''
+      ),
+      'entity_id' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'description' => 'The identifier of the entity attached to these credits',
+      ),
+      'credit_type' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'description' => 'The identifier of the credit type of this credit',
+        'default' => '',
+      ),
+      'expiration_date' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => FALSE,
+        'description' => 'The credit expiration date'
+      ),
+      'credits' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'description' => 'Number of credits associated to this entity',
+      ),
+    ),
+    'primary key' => array('cid'),
+    'indexes' => array(
+      'entity' => array('entity_type', 'entity_id'),
+    ),
+    'foreign keys' => array(
+      'credit_type' => array(
+        'table' => 'commerce_credits_types',
+        'columns' => array('credit_type_id' => 'cid'),
+      ),
+    ),
+  );
+  return $schema;
+}
+
+/**
+ * Make commerce credit types exportable
+ */
+function commerce_credits_update_7102() {
+  // Add label
+  if (!db_field_exists('commerce_credits_types', 'label')) {
+    $label = array(
+      'description' => 'The human-readable name of this entity.',
+      'type' => 'varchar',
+      'length' => 255,
+      'not null' => TRUE,
+      'default' => '',
+    );
+    db_add_field('commerce_credits_types', 'label', $label);
+    
+    $result = db_select('commerce_credits_types', 'c')
+      ->fields('c')
+      ->execute();
+    while ($record = $result->fetchAssoc()) {
+      $label = $record['name'];
+      $name = strtr($label, array(' ' => '_', '-' => '_'));
+      $name = strtolower($name);
+      db_update('commerce_credits_types')
+        ->fields(array(
+          'name' => $name,
+          'label' => $label
+        ))
+        ->condition('cid', $record['cid'])
+        ->execute();
+    }
+  }
+  
+  // Add status
+  if (!db_field_exists('commerce_credits_types', 'status')) {
+    $status = array(
+      'type' => 'int',
+      'not null' => TRUE,
+      // Set the default to ENTITY_CUSTOM without using the constant as it is
+      // not safe to use it at this point.
+      'default' => 0x01,
+      'size' => 'tiny',
+      'description' => 'The exportable status of the entity.',
+    );
+    db_add_field('commerce_credits_types', 'status', $status);
+  }
+  
+  // Add module
+  if (!db_field_exists('commerce_credits_types', 'module')) {
+    $module = array(
+      'description' => 'The name of the providing module if the entity has been defined in code.',
+      'type' => 'varchar',
+      'length' => 255,
+      'not null' => FALSE,
+    );
+    db_add_field('commerce_credits_types', 'module', $module);
+  }
+  
+  $name = array(
+    'description' => 'The machine-readable name of this entity.',
+    'type' => 'varchar',
+    'length' => '255',
+    'not null' => FALSE,
+  );
+  db_change_field('commerce_credits_types', 'name', 'name', $name);
+}
+
+/**
+ * Update table commerce_credits for entities
+ */
+function commerce_credits_update_7101() {
+  if (db_table_exists('commerce_credits_entities')) {
+    // Drop index
+    if (db_index_exists('commerce_credits_entities', 'entity')) {
+      db_drop_index('commerce_credits_entities', 'entity');
+    }
+    // Remove bundle
+    if (db_field_exists('commerce_credits_entities', 'bundle')) {
+      db_drop_field('commerce_credits_entities', 'bundle');
+    }
+    // Add index
+    if (!db_index_exists('commerce_credits_entities', 'entity')) {
+      db_add_index('commerce_credits_entities', 'entity', array('entity_type', 'entity_id'));
+    }
+    // Add credit_type_id
+    if (!db_field_exists('commerce_credits_entities', 'credit_type_id')) {
+      $credit_type_id = array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'description' => 'The identifier of the credit type of this credit',
+        'initial' => 0
+      );
+      $foreign = array(
+        'foreign keys' => array(
+          'credit_type' => array(
+            'table' => 'commerce_credits_types',
+            'columns' => array('credit_type_id' => 'cid'),
+          ),
+        ),
+      );
+      db_add_field('commerce_credits_entities', 'credit_type_id', $credit_type_id, $foreign);
+    }
+    // Rename credit_expiration_date to expiration_date
+    if (db_field_exists('commerce_credits_entities', 'credit_expiration_date')) {
+      $exp_date = array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => FALSE,
+        'description' => 'The credit expiration date'
+      );
+      db_change_field('commerce_credits_entities', 'credit_expiration_date', 'expiration_date', $exp_date);
+    }
+    // Remove credit type
+    if (db_field_exists('commerce_credits_entities', 'credit_type')) {
+      $result = db_select('commerce_credits_entities', 'c')
+        ->fields('c')
+        ->execute();
+      while ($record = $result->fetchAssoc()) {
+        // Get credit type id
+        $credit_type_name = $record['credit_type'];
+        $result2 = db_select('commerce_credits_types', 'c')
+          ->fields('c')
+          ->condition('name', $credit_type_name, '=')
+          ->execute();
+        $type_record = $result2->fetchAssoc();
+        $cid = $type_record['cid'];
+        db_update('commerce_credits_entities')
+          ->fields(array(
+            'credit_type_id' => $cid
+          ))
+          ->condition('cid', $record['cid'])
+          ->execute();
+      }
+      db_drop_field('commerce_credits_entities', 'credit_type');
+    }
+    // Remove credit_number
+    if (db_field_exists('commerce_credits_entities', 'credit_number')) {
+      $result = db_select('commerce_credits_entities', 'c')
+        ->fields('c')
+        ->execute();
+      while ($record = $result->fetchAssoc()) {
+        if ($record['credit_number'] > 1) {
+          $number= $record['credit_number'] - 1;
+          $credit = array(
+            'entity_type' => $record['entity_type'],
+            'entity_id' => $record['entity_id'],
+            'credit_type_id' => $record['credit_type_id'],
+            'expiration_date' => $record['expiration_date']
+          );
+          for ($i = 0; $i < $number; $i++) {
+            db_insert('commerce_credits_entities')
+              ->fields($credit)
+              ->execute();
+          }
+        }
+      }
+      db_drop_field('commerce_credits_entities', 'credit_number');
+    }
+    // Rename table
+    db_rename_table('commerce_credits_entities', 'commerce_credits');
+  }
+}
+
+/**
+ * Update table commerce_credits_types for use with entities
+ */
+function commerce_credits_update_7100() {
+  // Add cid
+  if (!db_field_exists('commerce_credits_types', 'cid')) {
+    $cid = array(
+      'description' => 'The primary identifier for a credit type, used internally only.',
+      'type' => 'serial',
+      'unsigned' => TRUE,
+      'not null' => TRUE,
+    );
+    db_add_field('commerce_credits_types', 'cid', $cid, array('primary key' => array('cid')));
+  }
+  // Remove index name
+  if (db_index_exists('commerce_credits_types', 'name')) {
+    db_drop_index('commerce_credits_types', 'name');
+  }
+  // Add group
+  if (!db_field_exists('commerce_credits_types', 'type')) {
+    $group = array(
+      'description' => 'The group of this credit type.',
+      'type' => 'varchar',
+      'length' => 255,
+      'not null' => TRUE,
+      'default' => '',
+    );
+    db_add_field('commerce_credits_types', 'type', $group);
+  }
+  // Remove group label
+  if (db_field_exists('commerce_credits_types', 'group_label')) {
+    // Enable commerce credits UI
+    module_enable(array('commerce_credits_ui'));
+    $result = db_select('commerce_credits_types', 'c')
+      ->fields('c')
+      ->execute();
+    $groups = array();
+    while ($record = $result->fetchAssoc()) {
+      $group_label = $record['group_label'];
+      $group = strtr($group_label, array(' ' => '_', '-' => '_'));
+      $group = strtolower($group);
+      if (!in_array($group_label, $groups)) {
+        $groups[] = $group_label;
+        // Create the group
+        $group_obj = (object) array(
+          'type' => $group,
+          'name' => $group_label,
+          'description' => ''
+        );
+        drupal_write_record('commerce_credits_groups', $group_obj);
+      }
+      db_update('commerce_credits_types')
+        ->fields(array(
+          'type' => $group
+        ))
+        ->condition('cid', $record['cid'])
+        ->execute();
+    }
+    db_drop_field('commerce_credits_types', 'group_label');
+  }
+}
+
+/**
+ * Add credits field.
+ */
+function commerce_credits_update_7103() {
+  // Add credits field.
+  if (!db_field_exists('commerce_credits', 'credits')) {
+    $credits = array(
+      'type' => 'int',
+      'unsigned' => TRUE,
+      'not null' => TRUE,
+      'description' => 'Number of credits associated to this entity',
+      'initial' => 1,
+    );
+    db_add_field('commerce_credits', 'credits', $credits);
+  }
+}
+
+/**
+ * Fix the credit type reference
+ */
+function commerce_credits_update_7104() {
+  // Add credit_type.
+  if (!db_field_exists('commerce_credits', 'credit_type')) {
+    $credit_type = array(
+      'type' => 'varchar',
+      'length' => 255,
+      'not null' => TRUE,
+      'description' => 'The identifier of the credit type of this credit',
+      'default' => '',
+    );
+    $foreign = array(
+      'foreign keys' => array(
+        'credit_type' => array(
+          'table' => 'commerce_credits_types',
+          'columns' => array('credit_type' => 'name'),
+        ),
+      ),
+    );
+    db_add_field('commerce_credits', 'credit_type', $credit_type, $foreign);
+  }
+  // Remove credit type id.
+  if (db_field_exists('commerce_credits', 'credit_type_id')) {
+    $result = db_select('commerce_credits', 'c')
+      ->fields('c')
+      ->execute();
+    while ($record = $result->fetchAssoc()) {
+      // Get credit type id
+      $result2 = db_select('commerce_credits_types', 'c')
+        ->fields('c')
+        ->condition('cid', $record['credit_type_id'])
+        ->execute();
+      $type_record = $result2->fetchAssoc();
+      db_update('commerce_credits')
+        ->fields(array(
+            'credit_type' => $type_record['name'],
+        ))
+        ->condition('cid', $record['cid'])
+        ->execute();
+    }
+    db_drop_field('commerce_credits', 'credit_type_id');
+  }
+}
+
+

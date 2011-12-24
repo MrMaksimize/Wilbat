@@ -1,0 +1,12 @@
+name = Commerce BPC display node creation
+description = Allows automatic display node creation for Commerce bulk product creation.
+package = Commerce (contrib)
+core = 7.x
+dependencies[] = commerce_bpc
+files[] = bpc_display.test
+; Information added by drupal.org packaging script on 2011-12-23
+version = "7.x-2.x-dev"
+core = "7.x"
+project = "commerce_bpc"
+datestamp = "1324599104"
+

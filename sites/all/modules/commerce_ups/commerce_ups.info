@@ -1,0 +1,14 @@
+name = UPS
+description = Integrates UPS with Commerce Shipping to rate selected UPS services during checkout.
+package = Commerce (shipping)
+dependencies[] = commerce
+dependencies[] = commerce_shipping
+dependencies[] = commerce_physical
+core = 7.x
+
+; Information added by drupal.org packaging script on 2011-10-27
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_ups"
+datestamp = "1319717013"
+

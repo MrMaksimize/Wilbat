@@ -1,0 +1,53 @@
+<?php
+
+/**
+ * Implements hook_install().
+ */
+function commerce_credits_ui_install() {
+  // Create the basic credit group.
+  $group = commerce_credits_ui_group_new();
+
+  $group['type'] = 'credit';
+  $group['name'] = t('Credit');
+  $group['description'] = t('A basic credit group.');
+  $group['is_new'] = TRUE;
+
+  // Skip reset to avoid errors in entity views that are caused by menu_rebuild().
+  commerce_credits_ui_group_save($group, FALSE, TRUE);
+}
+
+/**
+ * Implements hook_schema().
+ */
+function commerce_credits_ui_schema() {
+  $schema = array();
+
+  $schema['commerce_credits_groups'] = array(
+    'description' => 'Stores information about commerce credit groups created via Commerce Credits UI.',
+    'fields' => array(
+      'type' => array(
+        'description' => 'The machine-readable name of this group.',
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'name' => array(
+        'description' => 'The human-readable name of this group.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'description' => array(
+        'description' => 'A brief description of this group.',
+        'type' => 'text',
+        'not null' => TRUE,
+        'size' => 'medium',
+      ),
+    ),
+    'primary key' => array('type'),
+  );
+
+  return $schema;
+}

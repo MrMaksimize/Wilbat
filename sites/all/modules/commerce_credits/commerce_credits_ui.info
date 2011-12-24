@@ -1,0 +1,12 @@
+name = Commerce Credits UI
+description = Provides UI for Commerce Credits
+package = Commerce
+dependencies[] = commerce_credits
+core = 7.x
+files[] = includes/commerce_credits_ui.admin.inc
+; Information added by drupal.org packaging script on 2011-12-15
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_credits"
+datestamp = "1323950929"
+

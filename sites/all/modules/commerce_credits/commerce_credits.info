@@ -1,0 +1,30 @@
+name = Commerce Credits
+description = Provides Credits for Drupal Commerce
+package = Commerce
+dependencies[] = list
+dependencies[] = number
+dependencies[] = commerce_product
+core = 7.x
+
+; Module includes
+files[] = includes/commerce_credits_type.controller.inc
+files[] = includes/commerce_credits.controller.inc
+files[] = includes/commerce_credits.info.inc
+
+; Views handlers
+files[] = includes/views/handlers/commerce_credits_handler_field_group.inc
+files[] = includes/views/handlers/commerce_credits_handler_filter_group.inc
+files[] = includes/views/handlers/commerce_credits_handler_field_type_operations.inc
+files[] = includes/views/handlers/commerce_credits_handler_entity_relation.inc
+files[] = includes/views/handlers/commerce_credits_handler_credits_relation.inc
+
+; Test files.
+files[] = tests/commerce_credits.test
+files[] = tests/commerce_credits_ui.test
+
+; Information added by drupal.org packaging script on 2011-12-15
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_credits"
+datestamp = "1323950929"
+

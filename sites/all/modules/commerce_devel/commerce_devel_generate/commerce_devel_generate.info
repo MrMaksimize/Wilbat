@@ -1,0 +1,14 @@
+name = Commerce Devel Generate
+description = Generate dummy products, etc.
+package = Commerce (contrib)
+core = 7.x
+dependencies[] = commerce
+dependencies[] = devel_generate
+tags[] = developer
+
+; Information added by drupal.org packaging script on 2011-06-10
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_devel"
+datestamp = "1307664367"
+

@@ -1,0 +1,265 @@
+<?php
+
+/**
+ * @file
+ * Coupon User Interface for Drupal Commerce
+ *
+ * This file contains all the user interface functionality for the coupon system
+ * built on Drupal Commerce.
+ */
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function commerce_coupon_ui_entity_info_alter(&$entity_info) {
+  // Alter the entity for enabeling the admin UI
+  $entity_info['commerce_coupon']['admin ui'] = array(
+    'path' => 'admin/commerce/coupons',
+    'file' => 'includes/commerce_coupon_ui.forms.inc',
+  );
+
+  // Alter the entity for enabeling the admin UI
+  $entity_info['commerce_coupon_type']['admin ui'] = array(
+    'path' => 'admin/commerce/coupons/types',
+    'file' => 'includes/commerce_coupon_ui.forms.inc',
+  );
+
+  foreach ($entity_info['commerce_coupon']['bundles'] as $type => &$info) {
+    $info['admin'] = array(
+      'path' => 'admin/commerce/coupons/types/manage/' . $type,
+      // 'real path' => 'admin/commerce/coupons/types/manage/' . $type_arg,
+      // 'bundle argument' => $type,
+      'access arguments' => array('administer coupon types'),
+    );
+  }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_coupon_ui_menu() {
+  // When deinstalling and the commerce_coupon module is already disabled
+  // the commerce_coupon_get_types function cannot be called.
+  if (function_exists('commerce_coupon_get_types')) {
+    foreach (commerce_coupon_get_types() as $type => $info) {
+      $entity = entity_create('commerce_coupon', array('type' => $type));
+      $type_arg = strtr($type, '_', '-');
+      $items['admin/commerce/coupons/add/' . $type_arg] = array(
+        'title' => 'Create @name',
+        'title arguments' => array('@name' => $info->label),
+        'page callback' => 'entity_ui_get_form',
+        'page arguments' => array('commerce_coupon', $entity, 'add'),
+        'file' => 'includes/commerce_coupon_ui.forms.inc',
+        'access callback' => 'commerce_coupon_access',
+        'access arguments' => array('create', $type),
+        'module' => 'commerce_coupon',
+      );
+    }
+  }
+
+  $items['admin/commerce/coupons/settings'] = array(
+    'title' => 'Settings',
+    'description' => 'Global configuration for coupons.',
+    'file' => 'includes/commerce_coupon_ui.settings.inc',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('commerce_coupon_ui_settings_form'),
+    'access arguments' => array('administer coupon settings'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 50,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_menu_alter().
+ */
+function commerce_coupon_menu_alter(&$items) {
+  $items['admin/commerce/coupons/types']['type'] = MENU_LOCAL_TASK;
+  $items['admin/commerce/coupons/types']['title'] = 'Types';
+
+  // On uninstall we need to be sure that this item is set as array.
+  if (!isset($items['admin/commerce/coupons'])) {
+    $items['admin/commerce/coupons'] = array();
+  }
+
+  // @TODO: Any harm in the following up to hook_menu()?
+  $items['admin/commerce/coupons/list'] = array(
+    'title' => 'Coupons',
+    'description' => 'Manage the coupons.',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -10,
+  ) + $items['admin/commerce/coupons'];
+
+  $items['admin/commerce/coupons/add'] = array(
+    'title' => 'Create Coupon',
+    'page callback' => 'commerce_coupon_ui_add_page',
+    'access callback' => 'commerce_coupon_access',
+    'access arguments' => array('create'),
+    'module' => 'commerce_coupon_ui',
+  );
+
+  $items['admin/commerce/coupons/create'] = array(
+    'title' => 'Create Coupon',
+    'page callback' => 'commerce_coupon_ui_create_page',
+    'access callback' => 'commerce_coupon_access',
+    'access arguments' => array('create'),
+    'module' => 'commerce_coupon_ui',
+    'type' => MENU_LOCAL_ACTION,
+  );
+
+  // Enable the use of menu_contextual_links
+  $items['admin/commerce/coupons/manage/%commerce_coupon/edit']['type'] = MENU_DEFAULT_LOCAL_TASK;
+  $items['admin/commerce/coupons/manage/%commerce_coupon/edit']['title'] = t('edit');
+  $items['admin/commerce/coupons/manage/%commerce_coupon/edit']['context'] = MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE;
+
+  // On uninstall we need to be sure that this item is set as array.
+  if (!isset($items['admin/commerce/coupons/manage/%commerce_coupon/%'])) {
+    $items['admin/commerce/coupons/manage/%commerce_coupon/%'] = array();
+  }
+
+  $items['admin/commerce/coupons/manage/%commerce_coupon/delete'] = $items['admin/commerce/coupons/manage/%commerce_coupon/%'] + array(
+    'title' => t('Delete'),
+    'access callback' => 'entity_access',
+    'access arguments' => array('update', 'commerce_coupon', 4),
+    'type' => MENU_CALLBACK,
+    'context' => MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE,
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('commerce_coupon_ui_delete_form', 4),
+  );
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function commerce_coupon_ui_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'commerce_coupon_ui') . '/includes/views',
+  );
+}
+
+function commerce_coupon_ui_create_page() {
+  drupal_goto('admin/commerce/coupons/add');
+}
+
+function commerce_coupon_ui_add_page($type = NULL) {
+  $commerce_coupon_types = commerce_coupon_get_types();
+  if ($type) {
+    // Replace URL friendly dashes with underscores
+    $type = str_replace('-', '_', $type);
+
+    // Load entity's details and set up entity create
+    $info = $commerce_coupon_types[$type];
+    $entity = entity_create('commerce_coupon', array('type' => $type));
+
+    // Load and return the form
+    return entity_ui_get_form('commerce_coupon', $entity, 'add');
+
+  }
+  else {
+    // If there is only one commerce coupon type, redirect user there
+    if (count($commerce_coupon_types) == 1) {
+     $type = array_shift($commerce_coupon_types)->type;
+      $type = str_replace('_', '-', $type);
+      drupal_goto('admin/commerce/coupons/add/' . $type);
+    }
+
+    return theme('commerce_coupon_ui_add_list', array('commerce_coupon_types' => $commerce_coupon_types));
+  }
+}
+
+function commerce_coupon_ui_delete_form($form, &$form_state, $commerce_coupons) {
+  if (!is_array($commerce_coupons)) {
+    $commerce_coupons = array($commerce_coupons);
+  }
+  return commerce_coupon_ui_delete_confirm($form, $form_state, $commerce_coupons);
+}
+
+/**
+ * Confirm form to delete coupons.
+ * 
+ * @param CommerceCoupon $commerce_coupons
+ */
+function commerce_coupon_ui_delete_confirm($form, &$form_state, $commerce_coupons) {
+  # used on submit callback
+  $form['#commerce_coupons'] = $commerce_coupons;
+  $form['#submit'][] = 'commerce_coupon_ui_delete_confirm_submit';
+
+  # list the coupons to be deleted.
+  $form['commerce_coupons'] = array(
+    '#type' => 'markup',
+    '#theme' => 'item_list',
+    '#items' => array(),
+  );
+  foreach ($commerce_coupons as $id => $cc) {
+    $form['commerce_coupon']['#items'][] = check_plain($cc->commerce_coupon_code['und']['0']['safe_value']);
+  }
+
+  $confirm_question = format_plural(count($commerce_coupons), 'Are you sure you want to delete this coupon?', 'Are you sure you want to delete these coupons?');
+  $first_coupon = reset($commerce_coupons);
+  $url = 'admin/commerce/coupons/manage/' . $first_coupon->coupon_id;
+  return confirm_form($form, $confirm_question, $url, t('This action cannot be undone.'), t('Delete'), t('Cancel'));
+}
+
+/**
+ * Submit handler for coupon confirm delete form.
+ */
+function commerce_coupon_ui_delete_confirm_submit($form, &$form_state) {
+  if ($form_state['values']['confirm'] && !empty($form['#commerce_coupons'])) {
+    # build couponIDs array.
+    foreach ($form['#commerce_coupons'] as $cc) {
+      $coupon_ids[] = $cc->coupon_id;
+    }
+
+    # call api function to delete coupons.
+    commerce_coupon_delete_multiple($coupon_ids);
+
+    # count deleted
+    $count = count($coupon_ids);
+
+    # message to admin
+    watchdog('commerce', 'Deleted @count coupon.', array('@count' => $count));
+
+    # message to end user.
+    drupal_set_message(format_plural($count, 'Deleted 1 coupon.', 'Deleted @count coupons.'));
+  }
+  $form_state['redirect'] = 'admin/commerce/coupons';
+}
+
+/**
+ * Implements hook_theme().
+ */
+function commerce_coupon_theme() {
+  return array(
+    'commerce_coupon_ui_add_list' => array(
+      //'variables' => array('content' => NULL),
+      'variables' => array('commerce_coupon_types' => NULL),
+    )
+  );
+}
+
+function theme_commerce_coupon_ui_add_list($variables) {
+  $commerce_coupon_types = $variables['commerce_coupon_types'];
+
+  $output = '';
+  if ($commerce_coupon_types) {
+    $output = '<dl class="commerce-coupon-type-list">';
+    foreach ($commerce_coupon_types as $commerce_coupon_type) {
+      $uri = 'admin/commerce/coupons/add/' . str_replace('_', '-', $commerce_coupon_type->type);
+      $output .= '<dt>' . l(t('Create @name', array('@name' => $commerce_coupon_type->label)), $uri) . '</dt>';
+      // TODO: Description for each commerce coupon type?
+    }
+    $output .= '</dl>';
+  }
+  else {
+    if (user_access('administer coupon types')) {
+      $output = '<p>' . t('You have not created any coupon types yet. Go to the <a href="@create-coupon-type">coupon type creation page</a> to add a new coupon type.', array('@create-coupon-type' => url('admin/commerce/coupons/types/add'))) . '</p>';
+    }
+    else {
+      $output = '<p>' . t('No coupon type have been created yet for you to use.') . '</p>';
+    }
+  }
+
+  return $output;
+}

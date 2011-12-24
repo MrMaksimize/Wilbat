@@ -1,0 +1,80 @@
+<?php
+
+/**
+ * @file
+ * Batch generation functionalities for commerce_coupon module.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_coupon_batch_menu() {
+  $items['admin/commerce/coupons/batch'] = array(
+    'title' => 'Batch Creation',
+    'page callback' => 'commerce_coupon_batch_overview_page',
+    'access arguments' => array('commerce coupon batch creation'),
+    'type' => MENU_LOCAL_TASK,
+  );
+
+  $coupon_types = commerce_coupon_get_types();
+  foreach ($coupon_types as $type => $info) {
+    $entity = entity_create('commerce_coupon', array('type' => $type));
+    $type_arg = strtr($type, '_', '-');
+    $items['admin/commerce/coupons/batch/' . $type_arg] = array(
+      'tab_parent' => 'admin/commerce/coupons/batch',
+      'title' => 'Batch create @name',
+      'title arguments' => array('@name' => $info->label),
+      'page callback' => 'entity_ui_get_form',
+      'page arguments' => array('commerce_coupon', $entity, 'add'),
+      'file' => 'includes/commerce_coupon_batch.form.inc',
+      'access callback' => 'commerce_coupon_access',
+      'access arguments' => array('create', $type),
+      'type' => MENU_LOCAL_TASK,
+    );
+  }
+
+  # There's only one coupon type, we do not need secondary tabs
+  if (count($coupon_types) === 1) {
+    # Remove last item
+    $item = array_pop($items);
+
+    # set its callback, params to base path admin/commerce/coupons/batch
+    $items['admin/commerce/coupons/batch']['file']           = $item['file'];
+    $items['admin/commerce/coupons/batch']['page callback']  = $item['page callback'];
+    $items['admin/commerce/coupons/batch']['page arguments'] = $item['page arguments'];
+  }
+
+  return $items;
+}
+
+/**
+ * @TODO: What is this?
+ */
+function commerce_coupon_batch_task_page() {
+  drupal_goto('admin/commerce/coupons/batch');
+}
+
+/**
+ * Implements hook_permission().
+ */
+function commerce_coupon_batch_permission() {
+  $permissions['commerce coupon batch creation'] = array(
+    'title' => t('Commerce Coupon Batch Creation'),
+    'description' => t('Allows users to create coupons by a batch.'),
+  );
+  return $permissions;
+}
+
+/**
+ * @TODO: DOCME.
+ * @return type 
+ */
+function commerce_coupon_batch_overview_page() {
+  # what are we getting?
+  $item = menu_get_item();
+  $content = system_admin_menu_block($item);
+
+  # ???
+  # render as render-array?
+  return theme('admin_block_content', array('content' => $content));
+}

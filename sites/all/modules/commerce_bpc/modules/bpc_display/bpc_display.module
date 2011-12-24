@@ -1,0 +1,311 @@
+<?php
+/**
+ * @file
+ * Allows automatic display node creation for Commerce bulk product creation.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function bpc_display_menu() {
+  $items = array();
+  $items['admin/commerce/config/commerce_bpc/display_nodes'] = array(
+    'title' => 'Display node settings',
+    'description' => 'Settings for the bulk product creation display node settings',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('bpc_display_settings_form'),
+    'access arguments' => array('configure commerce bpc'),
+    'file' => 'bpc_display.admin.inc',
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 10,
+  );
+  foreach (commerce_product_types() as $type => $product_type) {
+    if (commerce_bpc_valid_product_type($type)) {
+
+      // The display node type selection page.
+      $items['admin/commerce/products/add-bulk/' . $type . '/display/%'] = array(
+        'title' => 'Create display node',
+        'description' => 'Create a display node for all created products',
+        'page callback' => 'bpc_display_select_node_type',
+        'page arguments' => array($type, 6),
+        'file' => 'bpc_display.forms.inc',
+        'type' => MENU_CALLBACK,
+        // We only check access for product creation here, as the node module
+        // does its own access checks (and denying access here would only
+        // confuse users / site builders).
+        'access callback' => 'commerce_product_access',
+        'access arguments' => array('create', commerce_product_new($type)),
+      );
+
+      // Product type specific settings pages
+      $items['admin/commerce/products/types/' . $type . '/commerce_bpc/display_nodes'] = array(
+        'title' => 'Display node settings',
+        'description' => 'Settings for the bulk product creation display node settings',
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('bpc_display_settings_form', $type),
+        'access arguments' => array('configure commerce bpc'),
+        'file' => 'bpc_display.admin.inc',
+        'type' => MENU_LOCAL_TASK,
+        'weight' => 10,
+      );
+    }
+  }
+  return $items;
+}
+
+/**
+ * Implements hook_commerc_bpc_post_create().
+ *
+ * Handles the auto-creation of nodes in "auto" and "onetoone" mode.
+ */
+function bpc_display_commerce_bpc_post_create($product_ids, &$form_state) {
+
+  $product_type = $form_state['values']['product_type'];
+
+  $method = commerce_bpc_setting('display', 'creation_method', $product_type);
+
+  if ($method == 'auto' || $method == 'onetoone') {
+
+    $data['bulk_data'] = array(
+      'product_type' => $product_type,
+      'sku_fragment' => $form_state['values']['sku_fragment'],
+      'title_fragment' => $form_state['values']['title_fragment'],
+    );
+    $node_type = commerce_bpc_setting('display', 'auto_content_type', $product_type);
+    $title_pattern = commerce_bpc_setting('display', 'auto_node_title_pattern', $product_type);
+
+    $node_title = token_replace($title_pattern, $data, array('sanitize' => FALSE));
+
+    if ($method == 'auto') {
+      $node = bpc_display_create_node($node_type, $node_title, $product_ids);
+      $form_state['commerce_bpc']['bpc_display']['nid'] = $node->nid;
+    }
+    elseif ($method == 'onetoone') {
+      foreach ($product_ids as $product_id) {
+        $data = array(
+          'commerce-product' => commerce_product_load($product_id),
+        );
+        // Do another round of token replacement, replacing product-specific
+        // tokens
+        $product_node_title = token_replace($node_title, $data, array('sanitize' => FALSE));
+        bpc_display_create_node($node_type, $product_node_title, $product_id);
+      }
+    }
+  }
+}
+
+
+/**
+ * Implements hook_commerce_bpc_destinations_alter().
+ *
+ * We use the _alter hook because we terminate redirecting after this hook.
+ */
+function bpc_display_commerce_bpc_destinations_alter(&$destinations, &$form_state, $product_ids) {
+  $product_type = $form_state['values']['product_type'];
+
+  $data['bulk_data'] = array(
+    'product_type' => $product_type,
+    'sku_fragment' => $form_state['values']['sku_fragment'],
+    'title_fragment' => $form_state['values']['title_fragment'],
+  );
+
+  $method = commerce_bpc_setting('display', 'creation_method', $product_type);
+
+  if ($method == 'onetoone' || $method == 'auto') {
+    switch (commerce_bpc_setting('display', 'auto_redirect', $product_type)) {
+      case 'display node' :
+        $destinations[] = 'node/' . $form_state['commerce_bpc']['bpc_display']['nid'];
+        break;
+      case 'custom' :
+        $destinations[] = commerce_bpc_setting('display', 'auto_redirect_custom', $product_type);
+        break;
+      }
+  }
+  else {
+    if ($form_state['input']['op'] == 'Create products and Create display') {
+
+    // Save the product IDs in the SESSION
+    // Generate a id to make sure different bulk creations do not interfere with
+    // each other
+    $id = uniqid();
+    $_SESSION['bulk_product_ids'][$id] = $product_ids;
+    $title_pattern = commerce_bpc_setting('display', 'auto_node_title_pattern', $product_type);
+    $_SESSION['bulk_title'][$id] = token_replace($title_pattern, $data, array('sanitize' => FALSE));
+
+    $destinations[] = 'admin/commerce/products/add-bulk/' . $product_type . '/display/' . $id;
+    }
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * Adds the 'Create products and Create display' button when appropriate.
+ */
+function bpc_display_form_commerce_bpc_create_bulk_form_alter(&$form, &$form_state, $form_id) {
+  $product_type = $form['product_type']['#value'];
+
+  if (commerce_bpc_setting('display', 'creation_method', $product_type) == 'wizard') {
+    $display_nodes = bpc_display_get_node_types($product_type);
+    if (!empty($display_nodes)) {
+      $form['next'] = array(
+        '#type' => 'submit',
+        '#value' => 'Create products and Create display',
+      );
+    }
+  }
+
+}
+/**
+ * Implements  hook_form_BASE_FORM_ID_alter().
+ *
+ * Prepopulate product reference fields in the node creation form after
+ * bulk creation.
+ */
+function bpc_display_form_node_form_alter(&$form, &$form_state, $form_id) {
+  // If we reach the node form after being redirected from the bulk
+  // creation form, there will be a GET parameter that contains a
+  // unique ID telling us where to find the IDs of the created products
+  // in the session array
+  if (
+    isset($_GET['bulk_creation_id'])
+  && isset($_SESSION['bulk_product_ids'][$_GET['bulk_creation_id']])
+  ) {
+
+    $ids = $_SESSION['bulk_product_ids'][$_GET['bulk_creation_id']];
+    $form['title']['#default_value'] = $_SESSION['bulk_title'][$_GET['bulk_creation_id']];
+
+    $field_name = _bpc_display_get_reference_field($form['type']['#value']);
+    $field = field_info_field($field_name);
+
+    switch ($form[$field_name][LANGUAGE_NONE]['#type']) {
+      case 'textfield':
+      // The autocomplete text field uses SKUs, so we need to retrieve those
+        $products = commerce_product_load_multiple($ids);
+        $skus = array();
+        foreach ($products as $product) {
+          $skus[] = $product->sku;
+        }
+        $form[$field_name][LANGUAGE_NONE]['#default_value'] = implode(', ', $skus);
+        break;
+
+      case 'select':
+      case 'checkboxes':
+        $form[$field_name][LANGUAGE_NONE]['#default_value'] = $ids;
+        break;
+    }
+  }
+}
+/**
+ * Determine the node types that can serve as display nodes.
+ *
+ * @param $product_type
+ *  The product type that should be referenced. Pass FALSE to only retrieve
+ *  those node types that can reference all product types.
+ *
+ * @return
+ *   An array of node types that can reference $product_type. Keys are
+ *   the bundle name of the node type, values are their human readable names.
+ */
+function bpc_display_get_node_types($product_type = FALSE) {
+  $allowed_types = array();
+  $node_types = node_type_get_types();
+
+  foreach ($node_types as $type => $node_type) {
+    if ($field_name = _bpc_display_get_reference_field($type)) {
+      $instance = field_info_instance('commerce_product', $field_name, $type);
+      $referenceable = isset($instance['settings']['referenceable_types']) ? $instance['settings']['referenceable_types'] : array();
+      // Deselected fields will show up here as keys with value
+      // 0. In order to correctly determine whether no value was
+      // set (== all product types are referenceable), we filter
+      // out these values.
+      $referenceable = array_filter($referenceable);
+      if (
+        empty($referenceable)
+      || (
+        !empty($product_type)
+        && isset($referenceable[$product_type])
+      )) {
+        $allowed_types[$type] = $node_type->name;
+      }
+    }
+  }
+  return $allowed_types;
+}
+
+/**
+ * Create a display node that links to a set of products.
+ *
+ * @param $node_type
+ *   The machine name of the node type of the node to be created.
+ * @param $title
+ *   The title of the node to be created.
+ * @param $product_ids
+ *   Either a single product ID or an array of product IDs that will be linked
+ *   from the newly-created node.
+ */
+function bpc_display_create_node($node_type, $title, $product_ids) {
+  if (!is_array($product_ids)) {
+    $product_ids = array($product_ids);
+  }
+
+  $node = new stdClass();
+  $node->type = $node_type;
+  node_object_prepare($node);
+  $node->language = LANGUAGE_NONE;
+  $node->title = $title;
+
+  $ref_field_name = _bpc_display_get_reference_field($node_type);
+  foreach ($product_ids as $id) {
+    $node->{$ref_field_name}[LANGUAGE_NONE][] = array('product_id' => $id);
+  }
+  drupal_alter('bpc_display_node', $node);
+  node_save($node);
+  return $node;
+}
+
+/**
+ * Determine the name of the product reference field (if any) on a node type.
+ *
+ * This is used, for example, to determine which field to prepopulate
+ * in the node form after bulk creation.
+ *
+ * @param $node_type
+ *   The bundle name of the node type for which the product reference field
+ *   is to be determined.
+ *
+ * @return
+ *   The machine name of the product reference field, if there is one,
+ *   NULL otherwise.
+ *
+ * @todo
+ *  Right now, we simply return the first product reference field we find.
+ *  What is the best way to deal with multiple product reference fields?
+ */
+function _bpc_display_get_reference_field($node_type) {
+  if ($fields = field_info_instances('node', $node_type)) {
+    foreach ($fields as $name => $field) {
+      $field_info = field_read_field($name);
+      if ($field_info['type'] == 'commerce_product_reference') {
+        return $name;
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_commerce_bpc_settings_defaults().
+ */
+function bpc_display_commerce_bpc_settings_defaults() {
+  $settings = array();
+
+  $settings['display'] = array(
+    'creation_method' => 'wizard',
+    'auto_content_type' => NULL,
+    'auto_node_title_pattern' => '[bulk_defaults:entered_title]',
+    'auto_redirect' => 'product_listing',
+    'auto_redirect_custom' => NULL,
+  );
+
+  return $settings;
+}

@@ -1,0 +1,39 @@
+<?php
+
+/**
+ * @file
+ * Basic coupon install
+ *
+ * This file contains...
+ */
+
+/**
+ * Implements hook_install().
+ */
+function commerce_coupon_basic_install() {
+  $values = array(
+    'type' => 'basic_coupon',
+    'label' => st('Coupon'),
+  );
+
+  $coupon_type = commerce_coupon_type_create($values);
+  commerce_coupon_type_save($coupon_type, TRUE);
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function commerce_coupon_basic_uninstall() {
+  // Make sure commerce.module is loaded so that commerce_delete_instances()
+  // is available.
+  drupal_load('module', 'commerce');
+
+  // The function commerce_coupon_type_delete() can't be used here because
+  // commerce_coupon module might not be enabled anymore at this point.
+  db_delete('commerce_coupon_type')
+    ->condition('type', 'basic_coupon')
+    ->execute();
+
+  // Delete all fields that belong to the module's coupon type.
+  commerce_delete_instances('commerce_coupon', 'basic_coupon');
+}

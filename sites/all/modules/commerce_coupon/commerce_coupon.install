@@ -1,0 +1,223 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the commerce_coupon module.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function commerce_coupon_schema() {
+  $schema['commerce_coupon'] = array(
+    'description' => 'The base table for coupons.',
+    'fields' => array(
+      'coupon_id' => array(
+        'description' => 'The primary identifier for the coupon.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'type' => array(
+        'description' => 'The {commerce_coupon_type}.type of this coupon.',
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'is_active' => array(
+        'description' => 'Indicates if this coupon is active or not.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'created' => array(
+        'description' => 'The Unix timestamp when the coupon was created.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'changed' => array(
+        'description' => 'The Unix timestamp when the coupon was most recently saved.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'data' => array(
+        'type' => 'blob',
+        'size' => 'big',
+        'not null' => FALSE,
+        'serialize' => TRUE,
+        'description' => 'Everything else, serialized.',
+      ),
+    ),
+    'primary key' => array('coupon_id'),
+  );
+
+  $schema['commerce_coupon_type'] = array(
+    'description' => 'Stores information about all defined coupon types.',
+    'fields' => array(
+      'type_id' => array(
+        'type' => 'serial',
+        'not null' => TRUE,
+        'description' => 'Primary Key: Unique coupon type ID.',
+      ),
+      'type' => array(
+        'description' => 'The machine-readable name of this coupon type.',
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+      ),
+      'label' => array(
+        'description' => 'The human-readable name of this coupon type.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'weight' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+        'size' => 'tiny',
+        'description' => 'The weight of this coupon type in relation to others.',
+      ),
+      'data' => array(
+        'type' => 'text',
+        'not null' => FALSE,
+        'size' => 'big',
+        'serialize' => TRUE,
+        'description' => 'A serialized array of additional data related to this coupon type.',
+      ),
+    ) + entity_exportable_schema_fields(),
+    'primary key' => array('type_id'),
+    'unique keys' => array(
+      'type' => array('type'),
+    ),
+  );
+
+  $schema['commerce_coupon_log'] = array(
+    'description' => 'Stores the usage of coupons.',
+    'fields' => array(
+      'log_id' => array(
+        'description' => 'The primary identifier for the log entry.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'coupon_id' => array(
+        'description' => 'The referenced coupon.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'uid' => array(
+        'description' => 'The referenced user.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'order_id' => array(
+        'description' => 'The referenced order id.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'is_accepted' => array(
+        'description' => 'Indicates if this coupon is accepted.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'is_processed' => array(
+        'description' => 'Indicates if this coupon is processed. This is set to true, when the order is completed.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'created' => array(
+        'description' => 'The Unix timestamp when the log was created.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'changed' => array(
+        'description' => 'The Unix timestamp when the log was most recently saved.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'primary key' => array('log_id'),
+    'foreign keys' => array(
+      'coupon' => array(
+        'table' => 'commerce_coupon',
+        'columns' => array('coupon_id' => 'coupon_id'),
+      ),
+      'order' => array(
+        'table' => 'commerce_order',
+        'columns' => array('order_id' => 'order_id'),
+      ),
+      'user' => array(
+        'table' => 'users',
+        'columns' => array('uid' => 'uid'),
+      ),
+    ),
+  );
+  return $schema;
+}
+
+/**
+ * Implements hook_field_schema().
+ */
+function commerce_coupon_reference_field_schema($field) {
+  return array(
+    'columns' => array(
+        'coupon_id' => array(
+          'type' => 'int',
+          'length' => 11,
+          'not null' => TRUE,
+        ),
+      ),
+    'indexes' => array(
+      'coupon_id' => array('coupon_id'),
+    ),
+    'foreign keys' => array(
+      'coupon_id' => array(
+        'table' => 'commerce_coupon',
+        'columns' => array('coupon_id' => 'coupon_id'),
+      ),
+    ),
+  );
+}
+
+/**
+ * Implements hook_install().
+ */
+function commerce_coupon_install() {
+  // Create the required fields.
+  $entity_type = 'commerce_coupon_log';
+  $bundle = 'commerce_coupon_log';
+  $field_name = 'commerce_granted_amount';
+
+  $instance = field_read_instance($entity_type, $field_name, $bundle);
+  if (empty($instance)) {
+    commerce_price_create_instance($field_name, $entity_type, $bundle, st('Coupon Granted Amount'));
+  }
+
+  // Clear the cache to display in Feeds as available plugin.
+  cache_clear_all('plugins:feeds:plugins', 'cache');
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function commerce_coupon_uninstall() {
+  // Make sure commerce.module is loaded so that commerce_delete_instances()
+  // is available.
+  drupal_load('module', 'commerce');
+
+  // Delete all fields that belong to the module's entity types.
+  commerce_delete_instances('commerce_coupon_log');
+  commerce_delete_instances('commerce_coupon');
+}
